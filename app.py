@@ -200,6 +200,18 @@ def _prioritize_varied_examples(df: pd.DataFrame) -> pd.DataFrame:
     return work.sort_values(by=["_example_score", "frequency_rank"], ascending=[False, True]).drop(columns=["_example_score"])
 
 
+def _extract_unique_hanzi_chars(text: str):
+    if not isinstance(text, str):
+        return []
+    chars = []
+    seen = set()
+    for ch in text:
+        if re.match(r"[\u4e00-\u9fff]", ch) and ch not in seen:
+            seen.add(ch)
+            chars.append(ch)
+    return chars
+
+
 def _is_english_semantic_match(user_answer: str, meaning_text: str, example_en: str = ""):
     user_norm = normalize_en_answer(user_answer)
     if not user_norm:
@@ -1457,6 +1469,62 @@ with tab_convo:
     convo_ref_tab, convo_fill_tab = st.tabs(["Reference (Hanzi + Pinyin + English)", "Drag & Drop Practice"])
 
     with convo_ref_tab:
+        st.markdown(
+            """
+            <style>
+              .dc-line-card {
+                border: 1px solid #253247;
+                border-radius: 12px;
+                background: rgba(15, 23, 42, 0.35);
+                padding: 12px 14px;
+                margin-bottom: 8px;
+              }
+              .dc-speaker {
+                font-size: 18px;
+                font-weight: 700;
+                color: #dbeafe;
+                margin-bottom: 8px;
+              }
+              .dc-hanzi {
+                font-size: 42px;
+                line-height: 1.35;
+                font-weight: 700;
+                color: #f8fafc;
+                letter-spacing: 1px;
+              }
+              .dc-pinyin {
+                font-size: 24px;
+                line-height: 1.45;
+                color: #cbd5e1;
+                margin-top: 4px;
+              }
+              .dc-english {
+                font-size: 22px;
+                line-height: 1.5;
+                color: #f1f5f9;
+                margin-top: 8px;
+                font-style: italic;
+              }
+              @media (max-width: 780px) {
+                .dc-hanzi { font-size: 34px; }
+                .dc-pinyin { font-size: 20px; }
+                .dc-english { font-size: 18px; }
+              }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        single_char_lookup = (
+            vocab[vocab["character_count"] == 1][
+                ["hanzi_simplified", "pinyin", "english_meanings", "official_hsk", "frequency_rank"]
+            ]
+            .dropna(subset=["hanzi_simplified"])
+            .sort_values(by=["frequency_rank", "hanzi_simplified"], ascending=[True, True])
+            .drop_duplicates(subset=["hanzi_simplified"], keep="first")
+            .set_index("hanzi_simplified")
+        )
+
         conversations = [
             {
                 "title": "1) Work Conversation",
@@ -1487,14 +1555,49 @@ with tab_convo:
             },
         ]
 
-        for convo in conversations:
+        for convo_idx, convo in enumerate(conversations):
             st.markdown(f"#### {convo['title']}")
-            for role, hanzi, pinyin, english in convo["lines"]:
-                st.markdown(f"**{role}**")
-                st.markdown(hanzi)
-                if pinyin:
-                    st.caption(pinyin)
-                st.markdown(f"_{english}_")
+            for line_idx, (role, hanzi, pinyin, english) in enumerate(convo["lines"]):
+                st.markdown(
+                    f"""
+                    <div class="dc-line-card">
+                      <div class="dc-speaker">{role}</div>
+                      <div class="dc-hanzi">{hanzi}</div>
+                      <div class="dc-pinyin">{pinyin if pinyin else "-"}</div>
+                      <div class="dc-english">{english}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                line_chars = _extract_unique_hanzi_chars(hanzi)
+                if line_chars:
+                    st.caption("Select a character to see its own meaning.")
+                    selected_char = st.radio(
+                        "Character picker",
+                        options=line_chars,
+                        horizontal=True,
+                        key=f"convo_char_pick_{convo_idx}_{line_idx}",
+                        label_visibility="collapsed",
+                    )
+
+                    if selected_char in single_char_lookup.index:
+                        row = single_char_lookup.loc[selected_char]
+                        pinyin_val = "" if pd.isna(row["pinyin"]) else str(row["pinyin"]).strip()
+                        english_val = "" if pd.isna(row["english_meanings"]) else str(row["english_meanings"]).strip()
+                        hsk_val = row["official_hsk"]
+                        hsk_text = f"HSK {int(hsk_val)}" if pd.notna(hsk_val) else "HSK N/A"
+
+                        d1, d2, d3 = st.columns([1, 1, 3])
+                        with d1:
+                            st.markdown(f"**Character**  \n{selected_char}")
+                        with d2:
+                            st.markdown(f"**HSK Level**  \n{hsk_text}")
+                        with d3:
+                            st.markdown(f"**English Meaning**  \n{english_val if english_val else '-'}")
+                        st.caption(f"Pinyin: {pinyin_val if pinyin_val else '-'}")
+                    else:
+                        st.info(f"No single-character entry found for `{selected_char}` in the vocabulary dataset.")
             st.divider()
 
     with convo_fill_tab:
