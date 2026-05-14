@@ -1,6 +1,8 @@
 import re
 import unicodedata
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 import pandas as pd
 import streamlit as st
@@ -32,6 +34,46 @@ def normalize_en_answer(text: str) -> str:
         return ""
     cleaned = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
     return re.sub(r"\s+", " ", cleaned)
+
+
+def extract_first_hanzi(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    for ch in text:
+        if re.match(r"[\u4e00-\u9fff]", ch):
+            return ch
+    return ""
+
+
+@st.cache_data(show_spinner=False)
+def fetch_stroke_svg_data(char: str):
+    if not char:
+        return {"ok": False, "error": "No character provided."}
+    codepoint = ord(char)
+    url = f"https://raw.githubusercontent.com/skishore/makemeahanzi/master/svgs/{codepoint}.svg"
+    try:
+        with urlopen(url, timeout=12) as resp:
+            svg_text = resp.read().decode("utf-8")
+    except HTTPError:
+        return {"ok": False, "error": f"Stroke order not found for '{char}'."}
+    except URLError:
+        return {"ok": False, "error": "Network issue while loading stroke order."}
+    except Exception:
+        return {"ok": False, "error": "Could not load stroke order data."}
+
+    ids = re.findall(r'id="make-me-a-hanzi-animation-(\d+)"', svg_text)
+    stroke_numbers = sorted({int(i) + 1 for i in ids})
+    stroke_count = len(stroke_numbers)
+
+    return {
+        "ok": True,
+        "char": char,
+        "codepoint": codepoint,
+        "stroke_count": stroke_count,
+        "sequence": stroke_numbers,
+        "svg_text": svg_text,
+        "source_url": url,
+    }
 
 
 def parse_official_hsk_level(levels_text: str):
@@ -129,7 +171,17 @@ with st.sidebar:
         index=0,
     )
 
-    max_rows = st.slider("Rows to show", min_value=20, max_value=500, value=120, step=20)
+    show_all_rows = st.checkbox("Show all filtered rows", value=True)
+    if show_all_rows:
+        max_rows = None
+    else:
+        max_rows = st.number_input(
+            "Rows to show",
+            min_value=20,
+            max_value=int(len(vocab)),
+            value=min(200, int(len(vocab))),
+            step=20,
+        )
 
 filtered = vocab.copy()
 
@@ -200,7 +252,9 @@ elif sort_mode == "Frequency (common first)":
 else:
     filtered = filtered.sort_values(by=["proficiency_10", "frequency_rank"], ascending=[True, True])
 
-tab_vocab, tab_convo, tab_quiz = st.tabs(["Vocabulary Explorer", "Daily Conversation", "Quick Quiz"])
+tab_vocab, tab_stroke, tab_convo, tab_quiz = st.tabs(
+    ["Vocabulary Explorer", "Stroke Order Practice", "Daily Conversation", "Quick Quiz"]
+)
 
 with tab_vocab:
     col1, col2, col3, col4 = st.columns(4)
@@ -225,7 +279,12 @@ with tab_vocab:
         "example_en",
     ]
 
-    shown = filtered[display_cols].head(max_rows).rename(
+    if max_rows is None:
+        shown_base = filtered[display_cols]
+    else:
+        shown_base = filtered[display_cols].head(int(max_rows))
+
+    shown = shown_base.rename(
         columns={
             "hanzi_simplified": "Hanzi (Simplified)",
             "pinyin": "Pinyin",
@@ -246,6 +305,85 @@ with tab_vocab:
         file_name="mandarin_filtered_vocab.csv",
         mime="text/csv",
     )
+
+with tab_stroke:
+    st.markdown("### Stroke Order Writing Exercise (with Number Sequence)")
+    st.caption("Pick one Hanzi, follow the stroke numbers, and tick each stroke as you practice writing.")
+
+    single_hanzi_df = (
+        filtered[filtered["character_count"] == 1][["hanzi_simplified", "pinyin", "english_meanings", "pinyin_key"]]
+        .drop_duplicates(subset=["hanzi_simplified"])
+        .sort_values(by=["pinyin_key", "hanzi_simplified"])
+    )
+    single_hanzi_list = single_hanzi_df["hanzi_simplified"].tolist()
+
+    if "stroke_char" not in st.session_state:
+        st.session_state["stroke_char"] = single_hanzi_list[0] if single_hanzi_list else "你"
+
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        if single_hanzi_list:
+            picked = st.selectbox("Choose a Hanzi from current filter", options=single_hanzi_list, key="stroke_pick")
+        else:
+            picked = "你"
+    with c2:
+        custom_input = st.text_input("Or type a Hanzi", value=st.session_state["stroke_char"], key="stroke_custom")
+
+    target_char = extract_first_hanzi(custom_input) or extract_first_hanzi(picked) or "你"
+    st.session_state["stroke_char"] = target_char
+
+    stroke_data = fetch_stroke_svg_data(target_char)
+    if not stroke_data.get("ok"):
+        st.warning(stroke_data.get("error", "No stroke data available."))
+    else:
+        st.markdown(f"**Character:** {target_char}  |  **Unicode:** U+{stroke_data['codepoint']:04X}")
+        st.markdown(f"**Stroke count:** {stroke_data['stroke_count']}")
+        if stroke_data["sequence"]:
+            seq_text = " -> ".join(str(n) for n in stroke_data["sequence"])
+            st.markdown(f"**Stroke sequence:** {seq_text}")
+
+        st.image(stroke_data["svg_text"], width=420)
+        st.link_button("Open stroke source (SVG)", stroke_data["source_url"])
+
+        st.markdown("#### Practice Checklist")
+        checklist_cols = st.columns(4)
+        for i, n in enumerate(stroke_data["sequence"]):
+            with checklist_cols[i % 4]:
+                st.checkbox(f"Stroke {n}", key=f"stroke_{target_char}_{n}")
+
+        related = filtered[filtered["hanzi_simplified"].astype(str).str.contains(re.escape(target_char), regex=True, na=False)].copy()
+        related = related.sort_values(by=["character_count", "pinyin_key", "hanzi_simplified"])
+        st.markdown("#### Related Words by Character Length")
+        for n in [1, 2, 3]:
+            sub = related[related["character_count"] == n][["hanzi_simplified", "pinyin", "english_meanings"]].head(12)
+            label = "1 char" if n == 1 else f"{n} chars"
+            if not sub.empty:
+                st.markdown(f"**{label}**")
+                st.dataframe(
+                    sub.rename(
+                        columns={
+                            "hanzi_simplified": "Hanzi",
+                            "pinyin": "Pinyin",
+                            "english_meanings": "English",
+                        }
+                    ),
+                    width="stretch",
+                    hide_index=True,
+                )
+        sub4 = related[related["character_count"] >= 4][["hanzi_simplified", "pinyin", "english_meanings"]].head(12)
+        if not sub4.empty:
+            st.markdown("**4+ chars**")
+            st.dataframe(
+                sub4.rename(
+                    columns={
+                        "hanzi_simplified": "Hanzi",
+                        "pinyin": "Pinyin",
+                        "english_meanings": "English",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+            )
 
 with tab_convo:
     st.markdown("### Daily Conversation (Hanzi + Pinyin + English)")
