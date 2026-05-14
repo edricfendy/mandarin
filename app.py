@@ -175,6 +175,7 @@ _LOW_QUALITY_EN_PATTERNS = (
     re.compile(r"^This is a .+\.$", re.IGNORECASE),
     re.compile(r"^This is very .+\.$", re.IGNORECASE),
     re.compile(r"^He comes always\.$", re.IGNORECASE),
+    re.compile(r'^.+".+"\s*\([^)]+\)\.?$', re.IGNORECASE),
 )
 
 _LOW_QUALITY_ZH_PATTERNS = (
@@ -194,23 +195,23 @@ _NO_PINYIN_CLOZE_PROMPTS = (
 _PROFESSIONAL_EXAMPLE_TEMPLATES = (
     (
         "在今天的讨论里，我们重点练习了“{hanzi}”这个表达。",
-        "In today's discussion, we focused on the expression \"{hanzi}\" ({meaning}).",
+        "In today's discussion, we focused on practicing the expression \"{hanzi}.\"",
     ),
     (
         "老师提醒我们，使用“{hanzi}”时要注意具体语境。",
-        "Our teacher reminded us to pay attention to context when using \"{hanzi}\" ({meaning}).",
+        "Our teacher reminded us to pay attention to context when using \"{hanzi}.\"",
     ),
     (
         "这段对话里，“{hanzi}”是关键表达。",
-        "In this dialogue, \"{hanzi}\" is a key expression meaning \"{meaning}.\"",
+        "In this dialogue, \"{hanzi}\" is the key expression.",
     ),
     (
         "为了让句子更自然，我把“{hanzi}”放在了核心位置。",
-        "To make the sentence sound more natural, I placed \"{hanzi}\" ({meaning}) in a key part of the sentence.",
+        "To make the sentence sound more natural, I placed \"{hanzi}\" in a key part of the sentence.",
     ),
     (
         "在口语练习中，我们先理解“{hanzi}”，再完成整句表达。",
-        "In speaking practice, we first understand \"{hanzi}\" ({meaning}) and then complete the full sentence.",
+        "In speaking practice, we first understand \"{hanzi}\" and then complete the full sentence.",
     ),
 )
 
