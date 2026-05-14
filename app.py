@@ -214,6 +214,24 @@ _PROFESSIONAL_EXAMPLE_TEMPLATES = (
     ),
 )
 
+_CONVERSATION_PHRASE_OVERRIDES = {
+    "两分钟": {"pinyin": "liǎng fēnzhōng", "english": "two minutes", "hsk": "HSK N/A", "frequency_rank": 400},
+    "开完": {"pinyin": "kāiwán", "english": "to finish (an activity)", "hsk": "HSK N/A", "frequency_rank": 420},
+    "截止日期": {"pinyin": "jiézhǐ rìqī", "english": "deadline", "hsk": "HSK N/A", "frequency_rank": 450},
+    "周五": {"pinyin": "zhōuwǔ", "english": "Friday", "hsk": "HSK N/A", "frequency_rank": 380},
+    "新版本": {"pinyin": "xīn bǎnběn", "english": "new version", "hsk": "HSK N/A", "frequency_rank": 430},
+    "堵不堵": {"pinyin": "dǔ bu dǔ", "english": "whether traffic is congested", "hsk": "HSK N/A", "frequency_rank": 460},
+    "高架": {"pinyin": "gāojià", "english": "elevated road", "hsk": "HSK N/A", "frequency_rank": 390},
+    "有点": {"pinyin": "yǒudiǎn", "english": "a little; somewhat", "hsk": "HSK N/A", "frequency_rank": 260},
+    "咖啡店": {"pinyin": "kāfēidiàn", "english": "coffee shop", "hsk": "HSK N/A", "frequency_rank": 410},
+    "八点": {"pinyin": "bā diǎn", "english": "eight o'clock", "hsk": "HSK N/A", "frequency_rank": 300},
+    "两点": {"pinyin": "liǎng diǎn", "english": "two o'clock", "hsk": "HSK N/A", "frequency_rank": 310},
+    "二十": {"pinyin": "èrshí", "english": "twenty", "hsk": "HSK 1", "frequency_rank": 240},
+    "走走": {"pinyin": "zǒuzou", "english": "to take a walk", "hsk": "HSK N/A", "frequency_rank": 470},
+    "看展览": {"pinyin": "kàn zhǎnlǎn", "english": "to see an exhibition", "hsk": "HSK N/A", "frequency_rank": 440},
+    "听起来": {"pinyin": "tīng qǐlái", "english": "to sound (as an impression)", "hsk": "HSK N/A", "frequency_rank": 320},
+}
+
 
 def _primary_meaning(meaning_text: str) -> str:
     candidates = _split_meaning_candidates(meaning_text)
@@ -363,6 +381,20 @@ def _build_expression_lookup(df: pd.DataFrame):
             "hsk": hsk_text,
             "frequency_rank": int(row["frequency_rank"]),
         }
+
+    for phrase, info in _CONVERSATION_PHRASE_OVERRIDES.items():
+        key = str(phrase).strip()
+        if not key:
+            continue
+        if key not in lookup:
+            lookup[key] = {
+                "hanzi": key,
+                "pinyin": str(info.get("pinyin", "")).strip(),
+                "english": str(info.get("english", "")).strip(),
+                "length": len(key),
+                "hsk": str(info.get("hsk", "HSK N/A")).strip() or "HSK N/A",
+                "frequency_rank": int(info.get("frequency_rank", 500)),
+            }
     return lookup
 
 
@@ -430,7 +462,50 @@ def _is_hanzi_char(ch: str) -> bool:
     return bool(re.match(r"[\u4e00-\u9fff]", ch or ""))
 
 
-def _build_sentence_click_tokens(line_text: str, expression_lookup: dict, max_char_len: int = 7):
+def _segment_hanzi_run_for_click_selection(run_text: str, expression_lookup: dict, max_char_len: int = 4, min_click_len: int = 2):
+    run = "" if not isinstance(run_text, str) else run_text
+    if not run:
+        return []
+
+    n = len(run)
+    best_score = [-10**9] * (n + 1)
+    choice = [None] * (n + 1)
+    best_score[n] = 0.0
+    choice[n] = ("end", "", 0)
+
+    for i in range(n - 1, -1, -1):
+        # Fallback: keep this character as plain text (not clickable).
+        plain_score = -1.8 + best_score[i + 1]
+        best_score[i] = plain_score
+        choice[i] = ("plain", run[i], 1)
+
+        max_size = min(max_char_len, n - i)
+        for size in range(min_click_len, max_size + 1):
+            candidate = run[i : i + size]
+            info = expression_lookup.get(candidate)
+            if not info:
+                continue
+
+            freq = float(info.get("frequency_rank", 999999))
+            length_bonus = size * 3.0
+            two_char_bonus = 1.2 if size == 2 else 0.0
+            freq_bonus = max(0.0, 2.0 - min(freq, 30000.0) / 15000.0)
+            score = length_bonus + two_char_bonus + freq_bonus + best_score[i + size]
+
+            if score > best_score[i]:
+                best_score[i] = score
+                choice[i] = ("click", candidate, size)
+
+    segments = []
+    i = 0
+    while i < n:
+        kind, text, size = choice[i] if choice[i] else ("plain", run[i], 1)
+        segments.append({"text": text, "clickable": kind == "click"})
+        i += max(size, 1)
+    return segments
+
+
+def _build_sentence_click_tokens(line_text: str, expression_lookup: dict, max_char_len: int = 4):
     text = "" if not isinstance(line_text, str) else line_text
     if not text:
         return []
@@ -448,22 +523,23 @@ def _build_sentence_click_tokens(line_text: str, expression_lookup: dict, max_ch
         while j < len(text) and _is_hanzi_char(text[j]):
             j += 1
         run = text[i:j]
-        k = 0
-        while k < len(run):
-            matched = None
-            max_size = min(max_char_len, len(run) - k)
-            for size in range(max_size, 0, -1):
-                candidate = run[k : k + size]
-                if candidate in expression_lookup:
-                    matched = candidate
-                    break
+        run_segments = _segment_hanzi_run_for_click_selection(
+            run_text=run,
+            expression_lookup=expression_lookup,
+            max_char_len=max_char_len,
+            min_click_len=2,
+        )
+        for segment in run_segments:
+            seg_text = str(segment.get("text", ""))
+            if not seg_text:
+                continue
 
-            if matched:
-                info = expression_lookup.get(matched, {})
+            if bool(segment.get("clickable")) and seg_text in expression_lookup:
+                info = expression_lookup.get(seg_text, {})
                 primary = _primary_meaning(str(info.get("english", "")))
                 tokens.append(
                     {
-                        "text": matched,
+                        "text": seg_text,
                         "clickable": True,
                         "pinyin": str(info.get("pinyin", "")).strip(),
                         "meaning_primary": primary,
@@ -471,10 +547,8 @@ def _build_sentence_click_tokens(line_text: str, expression_lookup: dict, max_ch
                         "hsk": str(info.get("hsk", "HSK N/A")).strip() or "HSK N/A",
                     }
                 )
-                k += len(matched)
             else:
-                tokens.append({"text": run[k], "clickable": False})
-                k += 1
+                tokens.append({"text": seg_text, "clickable": False})
         i = j
 
     return tokens
@@ -749,24 +823,176 @@ def _is_english_semantic_match(user_answer: str, meaning_text: str, example_en: 
     return False
 
 
-def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, prompt_style: str):
-    use_hanzi_pinyin_prompt = prompt_style == "hanzi_pinyin"
+def _prepare_quiz_source_df(df: pd.DataFrame) -> pd.DataFrame:
     work = df.copy()
-    work["hanzi_simplified"] = work["hanzi_simplified"].fillna("").astype(str).str.strip()
-    work["pinyin"] = work["pinyin"].fillna("").astype(str).str.strip()
-    work["english_meanings"] = work["english_meanings"].fillna("").astype(str).str.strip()
-    work["example_zh"] = work["example_zh"].fillna("").astype(str).str.strip()
-    work["example_en"] = work["example_en"].fillna("").astype(str).str.strip()
+    for col in ["hanzi_simplified", "pinyin", "english_meanings", "example_zh", "example_en"]:
+        if col not in work.columns:
+            work[col] = ""
+        work[col] = work[col].fillna("").astype(str).str.strip()
+    return work
+
+
+def _apply_quiz_prompt_filter(df: pd.DataFrame, question_count: int, prompt_style: str, quiz_kind: str) -> pd.DataFrame:
+    use_hanzi_pinyin_prompt = prompt_style == "hanzi_pinyin"
+    work = _prepare_quiz_source_df(df)
     work = work[work["hanzi_simplified"] != ""]
-    work = _prioritize_varied_examples(work)
+
+    if quiz_kind == "translation":
+        work = work[work["english_meanings"] != ""]
 
     if use_hanzi_pinyin_prompt:
-        work = work[work["example_zh"] != ""]
+        work = work[work["pinyin"] != ""]
+        zh_quality = work.apply(
+            lambda r: not _is_low_quality_chinese_example(r["example_zh"], hanzi=r["hanzi_simplified"]),
+            axis=1,
+        )
+        strict = work[zh_quality]
     else:
-        work = work[(work["example_en"] != "") | (work["english_meanings"] != "")]
+        base_mask = (work["english_meanings"] != "") | (work["example_en"] != "")
+        work = work[base_mask]
+        en_quality = work["example_en"].apply(lambda x: not _is_low_quality_english_example(x))
+        strict = work[en_quality]
+
+    min_floor = min(len(work), max(8, int(question_count * 0.65)))
+    if len(strict) >= min_floor:
+        return _prioritize_varied_examples(strict)
+    return _prioritize_varied_examples(work)
+
+
+def _build_sentence_pinyin_display(sentence_text: str, expression_lookup: dict, max_char_len: int = 4) -> str:
+    text = "" if not isinstance(sentence_text, str) else sentence_text
+    if not text:
+        return ""
+
+    punctuation = set("，。！？、,.!?;:：；")
+    output_tokens = []
+    i = 0
+
+    while i < len(text):
+        if text.startswith("___", i):
+            output_tokens.append("___")
+            i += 3
+            continue
+
+        ch = text[i]
+        if _is_hanzi_char(ch):
+            j = i
+            while j < len(text) and _is_hanzi_char(text[j]):
+                j += 1
+            run = text[i:j]
+            k = 0
+            while k < len(run):
+                matched = None
+                max_size = min(max_char_len, len(run) - k)
+                for size in range(max_size, 0, -1):
+                    candidate = run[k : k + size]
+                    info = expression_lookup.get(candidate)
+                    if info and str(info.get("pinyin", "")).strip():
+                        matched = (candidate, str(info.get("pinyin", "")).strip())
+                        break
+                if matched:
+                    output_tokens.append(matched[1])
+                    k += len(matched[0])
+                else:
+                    output_tokens.append(run[k])
+                    k += 1
+            i = j
+            continue
+
+        if ch.isspace():
+            output_tokens.append(" ")
+        else:
+            output_tokens.append(ch)
+        i += 1
+
+    built = ""
+    for token in output_tokens:
+        if token == " ":
+            if built and not built.endswith(" "):
+                built += " "
+            continue
+
+        if token in punctuation:
+            built = built.rstrip() + token + " "
+            continue
+
+        if built and not built.endswith(" "):
+            built += " "
+        built += token
+
+    return re.sub(r"\s+", " ", built).strip()
+
+
+def _paginate_quiz_sentences(sentences, word_bank, page_size: int = 8):
+    if not sentences:
+        return []
+
+    bank = [str(w).strip() for w in word_bank if str(w).strip()]
+    pages = []
+    for start in range(0, len(sentences), page_size):
+        page_sentences = sentences[start : start + page_size]
+        answers = []
+        for sent in page_sentences:
+            raw_answers = sent.get("answers", [])
+            if not isinstance(raw_answers, list):
+                raw_answers = [raw_answers]
+            for raw in raw_answers:
+                opts = _normalize_expected_options(raw)
+                if opts:
+                    answers.append(opts[0])
+
+        page_answers = list(dict.fromkeys([a for a in answers if a]))
+        distractor_pool = [w for w in bank if w not in set(page_answers)]
+        distractor_count = min(len(distractor_pool), max(5, int(len(page_answers) * 0.8)))
+        page_word_bank = list(dict.fromkeys(page_answers + distractor_pool[:distractor_count]))
+        pages.append({"sentences": page_sentences, "word_bank": page_word_bank})
+    return pages
+
+
+def render_paginated_drag_drop_activity(activity_id, title, prompt, sentences, word_bank, page_size=8):
+    pages = _paginate_quiz_sentences(sentences=sentences, word_bank=word_bank, page_size=page_size)
+    if not pages:
+        st.warning("No quiz items available for this activity.")
+        return
+
+    if len(pages) == 1:
+        render_drag_drop_activity(
+            activity_id=activity_id,
+            title=title,
+            prompt=prompt,
+            sentences=pages[0]["sentences"],
+            word_bank=pages[0]["word_bank"],
+            height=min(1700, 360 + int(len(pages[0]["sentences"]) * 86)),
+        )
+        return
+
+    st.caption(f"Questions are split into {len(pages)} pages, each with its own smaller word bank.")
+    page_idx = st.selectbox(
+        "Quiz page",
+        options=list(range(len(pages))),
+        format_func=lambda idx: f"Page {idx + 1} ({len(pages[idx]['sentences'])} questions)",
+        key=f"{activity_id}_page_pick",
+    )
+    page = pages[int(page_idx)]
+    render_drag_drop_activity(
+        activity_id=f"{activity_id}_p{int(page_idx) + 1}",
+        title=f"{title} - Page {int(page_idx) + 1}/{len(pages)}",
+        prompt=prompt,
+        sentences=page["sentences"],
+        word_bank=page["word_bank"],
+        height=min(1700, 360 + int(len(page["sentences"]) * 86)),
+    )
+
+
+def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, prompt_style: str):
+    use_hanzi_pinyin_prompt = prompt_style == "hanzi_pinyin"
+    work = _apply_quiz_prompt_filter(df=df, question_count=question_count, prompt_style=prompt_style, quiz_kind="cloze")
 
     if work.empty:
         return [], []
+
+    expression_lookup_source = vocab if "vocab" in globals() else work
+    expression_lookup = _build_expression_lookup(expression_lookup_source)
 
     sample_size = min(question_count, len(work))
     top_pool_size = min(len(work), max(sample_size * 4, sample_size))
@@ -788,7 +1014,7 @@ def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, prompt_styl
             else:
                 text = f"{base}  （填空：___）"
             hanzi_hint = ""
-            pinyin_hint = f"Target pinyin: {pinyin}" if pinyin else "Target pinyin unavailable"
+            pinyin_hint = _build_sentence_pinyin_display(text, expression_lookup) or (f"Target pinyin: {pinyin}" if pinyin else "")
             english_hint = f"English context: {en_base}" if en_base else f"Meaning: {_primary_meaning(english)}"
         else:
             prompt_template = _NO_PINYIN_CLOZE_PROMPTS[idx % len(_NO_PINYIN_CLOZE_PROMPTS)]
@@ -824,14 +1050,12 @@ def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: 
     st.markdown("#### English Translation Quiz")
     st.caption("Type the English meaning. Grading is flexible: close meaning is accepted.")
 
-    work = df.copy()
-    work["hanzi_simplified"] = work["hanzi_simplified"].fillna("").astype(str).str.strip()
-    work["pinyin"] = work["pinyin"].fillna("").astype(str).str.strip()
-    work["english_meanings"] = work["english_meanings"].fillna("").astype(str).str.strip()
-    work["example_zh"] = work["example_zh"].fillna("").astype(str).str.strip()
-    work["example_en"] = work["example_en"].fillna("").astype(str).str.strip()
-    work = work[(work["hanzi_simplified"] != "") & (work["english_meanings"] != "")]
-    work = _prioritize_varied_examples(work)
+    work = _apply_quiz_prompt_filter(
+        df=df,
+        question_count=question_count,
+        prompt_style=prompt_style,
+        quiz_kind="translation",
+    )
 
     if work.empty:
         st.warning("Not enough vocabulary rows for translation quiz with current filters.")
@@ -858,6 +1082,7 @@ def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: 
                     st.caption(f"Example: {zh_ex}")
             else:
                 st.markdown(f"**{i + 1}. Translate (no pinyin):** `{hanzi}`")
+                st.caption(f"Hanzi hint: {hanzi}")
                 if en_ex:
                     st.caption(f"English context: {en_ex}")
 
@@ -2174,13 +2399,18 @@ with tab_quiz:
         if not sentences or not word_bank:
             st.warning("Not enough rows for dynamic cloze quiz with current filters.")
         else:
-            render_drag_drop_activity(
+            cloze_prompt = (
+                "Drag each item to the blank. Hanzi sentence is shown with pinyin support below each line. Word bank is split per page."
+                if prompt_style == "hanzi_pinyin"
+                else "Drag each item to the blank. This no-pinyin mode uses English context with Hanzi hint, and word bank is split per page."
+            )
+            render_paginated_drag_drop_activity(
                 activity_id="quiz_dynamic_cloze",
                 title="Dynamic Cloze Quiz",
-                prompt="Drag each item to the blank. This set is generated from your current filtered vocabulary.",
+                prompt=cloze_prompt,
                 sentences=sentences,
                 word_bank=word_bank,
-                height=min(1700, 340 + int(len(sentences) * 72)),
+                page_size=8,
             )
     else:
         render_translation_quiz(
