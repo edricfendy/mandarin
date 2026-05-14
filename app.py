@@ -174,15 +174,23 @@ def _prioritize_varied_examples(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     work = df.copy()
-    zh = work["example_zh"].fillna("").astype(str).str.strip()
-    en = work["example_en"].fillna("").astype(str).str.strip()
+    zh = work["example_zh"].fillna("").astype(str)
+    en = work["example_en"].fillna("").astype(str)
+    zh_vals = [val.strip() for val in zh.tolist()]
+    en_vals = [val.strip() for val in en.tolist()]
     bland_mask = pd.Series(
-        [_is_bland_example(zh_val, en_val) for zh_val, en_val in zip(zh.tolist(), en.tolist())],
+        [_is_bland_example(zh_val, en_val) for zh_val, en_val in zip(zh_vals, en_vals)],
         index=work.index,
     )
-    zh_len = zh.str.replace(r"[^\u4e00-\u9fff]", "", regex=True).str.len()
-    punctuation_bonus = zh.str.contains(r"[，。！？?!]", regex=True, na=False).astype(int)
-    en_len = en.str.len()
+    zh_len = pd.Series(
+        [len(re.sub(r"[^\u4e00-\u9fff]", "", zh_val)) for zh_val in zh_vals],
+        index=work.index,
+    )
+    punctuation_bonus = pd.Series(
+        [1 if any(ch in "，。！？?!" for ch in zh_val) else 0 for zh_val in zh_vals],
+        index=work.index,
+    )
+    en_len = pd.Series([len(en_val) for en_val in en_vals], index=work.index)
     work["_example_score"] = (
         (~bland_mask).astype(int) * 4
         + (zh_len >= 8).astype(int)
