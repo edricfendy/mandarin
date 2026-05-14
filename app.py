@@ -93,6 +93,9 @@ def _build_drag_drop_payload(sentences, word_bank):
     for sentence in sentences:
         text = str(sentence.get("text", ""))
         answers = sentence.get("answers", [])
+        hanzi_hint = str(sentence.get("hanzi_hint", "")).strip()
+        pinyin_hint = str(sentence.get("pinyin_hint", "")).strip()
+        english_hint = str(sentence.get("english_hint", "")).strip()
         if not isinstance(answers, list):
             answers = [answers]
 
@@ -109,7 +112,15 @@ def _build_drag_drop_payload(sentences, word_bank):
             expected_slots.append(_normalize_expected_options(answer))
             slot_indexes.append(len(expected_slots) - 1)
 
-        sentence_blocks.append({"segments": segments, "slot_indexes": slot_indexes})
+        sentence_blocks.append(
+            {
+                "segments": segments,
+                "slot_indexes": slot_indexes,
+                "hanzi_hint": hanzi_hint,
+                "pinyin_hint": pinyin_hint,
+                "english_hint": english_hint,
+            }
+        )
 
     tokens = [{"id": f"token_{i}", "text": str(word)} for i, word in enumerate(word_bank)]
     return {"sentences": sentence_blocks, "expected_slots": expected_slots, "tokens": tokens}
@@ -129,6 +140,56 @@ def _split_meaning_candidates(meaning_text: str):
             seen.add(key)
             dedup.append(part)
     return dedup
+
+
+_BLAND_EXAMPLE_PREFIXES = (
+    "这是",
+    "我在学习",
+    "我有",
+    "我在",
+    "他在",
+    "她在",
+    "你在",
+    "我吃了",
+    "我是",
+)
+
+
+def _is_bland_example(example_zh: str, example_en: str = "") -> bool:
+    zh = "" if pd.isna(example_zh) else str(example_zh).strip()
+    en = "" if pd.isna(example_en) else str(example_en).strip()
+    if not zh and not en:
+        return True
+    if zh and any(zh.startswith(prefix) for prefix in _BLAND_EXAMPLE_PREFIXES):
+        return True
+    if zh and "学习" in zh and ("“" in zh or "'" in zh):
+        return True
+    zh_core_len = len(re.sub(r"[^\u4e00-\u9fff]", "", zh))
+    if zh and zh_core_len <= 4:
+        return True
+    return False
+
+
+def _prioritize_varied_examples(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    work = df.copy()
+    zh = work["example_zh"].fillna("").astype(str).str.strip()
+    en = work["example_en"].fillna("").astype(str).str.strip()
+    bland_mask = pd.Series(
+        [_is_bland_example(zh_val, en_val) for zh_val, en_val in zip(zh.tolist(), en.tolist())],
+        index=work.index,
+    )
+    zh_len = zh.str.replace(r"[^\u4e00-\u9fff]", "", regex=True).str.len()
+    punctuation_bonus = zh.str.contains(r"[，。！？?!]", regex=True, na=False).astype(int)
+    en_len = en.str.len()
+    work["_example_score"] = (
+        (~bland_mask).astype(int) * 4
+        + (zh_len >= 8).astype(int)
+        + punctuation_bonus
+        + (en_len >= 16).astype(int)
+    )
+    return work.sort_values(by=["_example_score", "frequency_rank"], ascending=[False, True]).drop(columns=["_example_score"])
 
 
 def _is_english_semantic_match(user_answer: str, meaning_text: str, example_en: str = ""):
@@ -171,6 +232,7 @@ def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, with_hanzi_
     work["example_zh"] = work["example_zh"].fillna("").astype(str).str.strip()
     work["example_en"] = work["example_en"].fillna("").astype(str).str.strip()
     work = work[work["hanzi_simplified"] != ""]
+    work = _prioritize_varied_examples(work)
 
     if with_hanzi_prompt:
         work = work[work["example_zh"] != ""]
@@ -181,7 +243,8 @@ def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, with_hanzi_
         return [], []
 
     sample_size = min(question_count, len(work))
-    sampled = work.sample(sample_size, random_state=42).reset_index(drop=True)
+    top_pool_size = min(len(work), max(sample_size * 4, sample_size))
+    sampled = work.head(top_pool_size).sample(sample_size, random_state=42).reset_index(drop=True)
 
     sentences = []
     answers = []
@@ -189,6 +252,7 @@ def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, with_hanzi_
         answer = str(row["hanzi_simplified"]).strip()
         pinyin = str(row["pinyin"]).strip()
         english = str(row["english_meanings"]).strip()
+        en_base = str(row["example_en"]).strip() or english
 
         if with_hanzi_prompt:
             base = str(row["example_zh"]).strip()
@@ -196,12 +260,21 @@ def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, with_hanzi_
                 text = base.replace(answer, "___", 1)
             else:
                 text = f"{base}  (Target word: ___)"
+            pinyin_hint = f"Target pinyin: {pinyin}" if pinyin else "Target pinyin unavailable"
+            english_hint = f"English context: {en_base}" if en_base else ""
         else:
-            en_base = str(row["example_en"]).strip() or english
-            clue = f"Pinyin hint: {pinyin}" if pinyin else "Pinyin hint unavailable"
-            text = f"{en_base}  |  {clue}  |  Mandarin word: ___"
+            text = f"{en_base}  |  Mandarin word: ___"
+            pinyin_hint = f"Target pinyin: {pinyin}" if pinyin else "Target pinyin unavailable"
+            english_hint = ""
 
-        sentences.append({"text": text, "answers": [answer]})
+        sentences.append(
+            {
+                "text": text,
+                "answers": [answer],
+                "pinyin_hint": pinyin_hint,
+                "english_hint": english_hint,
+            }
+        )
         answers.append(answer)
 
     # Add distractors so the bank is larger than question count.
@@ -226,13 +299,15 @@ def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: 
     work["example_zh"] = work["example_zh"].fillna("").astype(str).str.strip()
     work["example_en"] = work["example_en"].fillna("").astype(str).str.strip()
     work = work[(work["hanzi_simplified"] != "") & (work["english_meanings"] != "")]
+    work = _prioritize_varied_examples(work)
 
     if work.empty:
         st.warning("Not enough vocabulary rows for translation quiz with current filters.")
         return
 
     sample_size = min(question_count, len(work))
-    sampled = work.sample(sample_size, random_state=99).reset_index(drop=True)
+    top_pool_size = min(len(work), max(sample_size * 4, sample_size))
+    sampled = work.head(top_pool_size).sample(sample_size, random_state=99).reset_index(drop=True)
 
     with st.form(f"{activity_id}_translation_form"):
         user_answers = []
@@ -241,13 +316,15 @@ def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: 
             pinyin = str(row["pinyin"]).strip()
             zh_ex = str(row["example_zh"]).strip()
             en_ex = str(row["example_en"]).strip()
+            pinyin_line = pinyin if pinyin else "(no pinyin available)"
 
             if with_hanzi_prompt:
-                st.markdown(f"**{i + 1}. Translate:** `{hanzi}` ({pinyin})")
+                st.markdown(f"**{i + 1}. Translate:**")
+                st.markdown(f"{hanzi}  \n{pinyin_line}")
                 if zh_ex:
                     st.caption(f"Example: {zh_ex}")
             else:
-                st.markdown(f"**{i + 1}. Translate (no Hanzi shown):** `{pinyin if pinyin else 'no pinyin'}`")
+                st.markdown(f"**{i + 1}. Translate (no Hanzi shown):** `{pinyin_line}`")
                 if en_ex:
                     st.caption(f"Usage context: {en_ex}")
 
@@ -580,10 +657,33 @@ def render_drag_drop_activity(activity_id, title, prompt, sentences, word_bank, 
         display: grid;
         gap: 8px;
       }}
+      .dd-row {{
+        border: 1px solid #dbe2ea;
+        border-radius: 10px;
+        background: #ffffff;
+        padding: 8px 10px;
+      }}
+      .dd-hint-hanzi {{
+        font-size: 19px;
+        line-height: 1.5;
+        color: #111827;
+      }}
+      .dd-hint-pinyin {{
+        font-size: 14px;
+        line-height: 1.55;
+        color: #1f2937;
+      }}
+      .dd-hint-english {{
+        font-size: 14px;
+        line-height: 1.55;
+        color: #374151;
+        margin-bottom: 4px;
+      }}
       .dd-line {{
         line-height: 1.9;
         font-size: 18px;
         color: #111827;
+        margin-top: 4px;
       }}
       .dd-line-no {{
         font-weight: 700;
@@ -754,6 +854,16 @@ def render_drag_drop_activity(activity_id, title, prompt, sentences, word_bank, 
           bankEl.innerHTML = "";
 
           payload.sentences.forEach((sentence, rowIdx) => {{
+            const rowWrap = document.createElement("div");
+            rowWrap.className = "dd-row";
+
+            if (sentence.hanzi_hint) {{
+              const hanziHint = document.createElement("div");
+              hanziHint.className = "dd-hint-hanzi";
+              hanziHint.textContent = sentence.hanzi_hint;
+              rowWrap.appendChild(hanziHint);
+            }}
+
             const line = document.createElement("div");
             line.className = "dd-line";
 
@@ -800,7 +910,20 @@ def render_drag_drop_activity(activity_id, title, prompt, sentences, word_bank, 
               }}
             }}
 
-            sentencesEl.appendChild(line);
+            rowWrap.appendChild(line);
+            if (sentence.pinyin_hint) {{
+              const pinyinHint = document.createElement("div");
+              pinyinHint.className = "dd-hint-pinyin";
+              pinyinHint.textContent = sentence.pinyin_hint;
+              rowWrap.appendChild(pinyinHint);
+            }}
+            if (sentence.english_hint) {{
+              const englishHint = document.createElement("div");
+              englishHint.className = "dd-hint-english";
+              englishHint.textContent = sentence.english_hint;
+              rowWrap.appendChild(englishHint);
+            }}
+            sentencesEl.appendChild(rowWrap);
           }});
 
           keepBankOrder();
@@ -1325,89 +1448,184 @@ with tab_convo:
             {
                 "title": "1) Work Conversation",
                 "lines": [
-                    ("A", "你现在有空吗？", "Nǐ xiànzài yǒu kòng ma?", "Are you free now?"),
-                    ("B", "有，怎么了？", "Yǒu, zěnme le?", "Yes, what's up?"),
-                    ("A", "我想问一下这个计划怎么样。", "Wǒ xiǎng wèn yíxià zhège jìhuà zěnmeyàng.", "I want to ask how this plan is."),
-                    ("B", "可能要改一点，不过差不多了。", "Kěnéng yào gǎi yìdiǎn, búguò chàbuduō le.", "It may need small changes, but it's almost done."),
+                    ("A", "你现在方便聊两分钟吗？", "Nǐ xiànzài fāngbiàn liáo liǎng fēnzhōng ma?", "Are you free to chat for two minutes right now?"),
+                    ("B", "可以，我刚开完会。", "Kěyǐ, wǒ gāng kāiwán huì.", "Sure, I just finished a meeting."),
+                    ("A", "客户希望我们把截止日期提前到周五。", "Kèhù xīwàng wǒmen bǎ jiézhǐ rìqī tíqián dào zhōuwǔ.", "The client wants us to move the deadline up to Friday."),
+                    ("B", "那我先改时间表，晚点发你新版本。", "Nà wǒ xiān gǎi shíjiānbiǎo, wǎndiǎn fā nǐ xīn bǎnběn.", "Then I'll update the timeline first and send you a new version later."),
                 ],
             },
             {
                 "title": "2) Commute Conversation",
                 "lines": [
-                    ("A", "你怎么去公司？", "Nǐ zěnme qù gōngsī?", "How do you go to work?"),
-                    ("B", "我坐地铁，有时候坐公共汽车。", "Wǒ zuò dìtiě, yǒu shíhou zuò gōnggòng qìchē.", "I take the subway, sometimes the bus."),
-                    ("A", "明天一起去吗？", "Míngtiān yìqǐ qù ma?", "Want to go together tomorrow?"),
-                    ("B", "可以，地铁站八点见。", "Kěyǐ, dìtiězhàn bā diǎn jiàn.", "Sure, see you at the subway station at 8."),
+                    ("A", "今天路上堵不堵？", "Jīntiān lùshang dǔ bu dǔ?", "Is traffic bad today?"),
+                    ("B", "高架有点慢，我改坐地铁了。", "Gāojià yǒudiǎn màn, wǒ gǎi zuò dìtiě le.", "The elevated road is slow, so I switched to the subway."),
+                    ("A", "那我们在公司楼下咖啡店见吧。", "Nà wǒmen zài gōngsī lóuxià kāfēidiàn jiàn ba.", "Then let's meet at the coffee shop under the office building."),
+                    ("B", "好，我大概八点二十到。", "Hǎo, wǒ dàgài bā diǎn èrshí dào.", "Great, I'll arrive around 8:20."),
                 ],
             },
             {
-                "title": "3) Social + Food Conversation",
+                "title": "3) Weekend Plan Conversation",
                 "lines": [
-                    ("A", "你吃饭了吗？", "Nǐ chīfàn le ma?", "Have you eaten?"),
-                    ("B", "还没有，来不及吃早饭。", "Hái méiyǒu, lái bu jí chī zǎofàn.", "Not yet, I didn't have time for breakfast."),
-                    ("A", "那我们先去餐厅吧。", "Nà wǒmen xiān qù cāntīng ba.", "Then let's go to a restaurant first."),
-                    ("B", "好啊，不客气，我请你。", "Hǎo a, bú kèqi, wǒ qǐng nǐ.", "Sounds good. It's my treat."),
+                    ("A", "周末你想在家休息还是出去走走？", "Zhōumò nǐ xiǎng zài jiā xiūxi háishi chūqù zǒuzou?", "Do you want to rest at home this weekend or go out?"),
+                    ("B", "我想先去菜市场，然后下午去看展览。", "Wǒ xiǎng xiān qù càishìchǎng, ránhòu xiàwǔ qù kàn zhǎnlǎn.", "I want to go to the market first, then see an exhibition in the afternoon."),
+                    ("A", "听起来不错，我可以一起吗？", "Tīng qǐlái búcuò, wǒ kěyǐ yìqǐ ma?", "Sounds great. Can I join?"),
+                    ("B", "当然可以，下午两点地铁站见。", "Dāngrán kěyǐ, xiàwǔ liǎng diǎn dìtiězhàn jiàn.", "Of course. Let's meet at the subway station at 2 p.m."),
                 ],
             },
         ]
 
         for convo in conversations:
             st.markdown(f"#### {convo['title']}")
-            st.markdown("| Speaker | Hanzi | Pinyin | English |")
-            st.markdown("|---|---|---|---|")
             for role, hanzi, pinyin, english in convo["lines"]:
-                st.markdown(f"| {role} | {hanzi} | {pinyin} | {english} |")
+                st.markdown(f"**{role}**")
+                st.markdown(hanzi)
+                if pinyin:
+                    st.caption(pinyin)
+                st.markdown(f"_{english}_")
+            st.divider()
 
     with convo_fill_tab:
+        daily_mode = st.radio(
+            "Practice display mode",
+            options=["With Hanzi", "No Hanzi (Pinyin only)"],
+            horizontal=True,
+            key="daily_drag_mode",
+        )
+        use_hanzi_mode = daily_mode == "With Hanzi"
+
+        work_word_bank = (
+            ["有空", "怎么了", "问", "怎么样", "可能", "差不多了", "一起", "当然"]
+            if use_hanzi_mode
+            else ["yǒu kòng", "zěnme le", "wèn", "zěnmeyàng", "kěnéng", "chàbuduō le", "yìqǐ", "dāngrán"]
+        )
+        work_sentences = [
+            {
+                "text": "你现在 ___ 吗？" if use_hanzi_mode else "Nǐ xiànzài ___ ma?",
+                "answers": ["有空"] if use_hanzi_mode else ["yǒu kòng"],
+                "pinyin_hint": "Nǐ xiànzài ___ ma?" if use_hanzi_mode else "",
+                "english_hint": "Are you free now?",
+            },
+            {
+                "text": "有，___？" if use_hanzi_mode else "Yǒu, ___?",
+                "answers": ["怎么了"] if use_hanzi_mode else ["zěnme le"],
+                "pinyin_hint": "Yǒu, ___?" if use_hanzi_mode else "",
+                "english_hint": "Yes, what's up?",
+            },
+            {
+                "text": "我想 ___ 一下这个计划 ___。" if use_hanzi_mode else "Wǒ xiǎng ___ yíxià zhège jìhuà ___.",
+                "answers": ["问", "怎么样"] if use_hanzi_mode else ["wèn", "zěnmeyàng"],
+                "pinyin_hint": "Wǒ xiǎng ___ yíxià zhège jìhuà ___." if use_hanzi_mode else "",
+                "english_hint": "I want to ask how this plan looks.",
+            },
+            {
+                "text": "___ 要改一点，不过 ___。" if use_hanzi_mode else "___ yào gǎi yìdiǎn, búguò ___.",
+                "answers": ["可能", "差不多了"] if use_hanzi_mode else ["kěnéng", "chàbuduō le"],
+                "pinyin_hint": "___ yào gǎi yìdiǎn, búguò ___." if use_hanzi_mode else "",
+                "english_hint": "It may need some changes, but it is almost done.",
+            },
+        ]
         render_drag_drop_activity(
             activity_id="daily_work_fill",
             title="Work Dialogue Practice",
             prompt="Drag each word into the correct blank to rebuild the conversation.",
-            word_bank=["有空", "怎么了", "问", "怎么样", "可能", "差不多了", "一起", "当然"],
-            sentences=[
-                {"text": "你现在 ___ 吗？", "answers": ["有空"]},
-                {"text": "有，___？", "answers": ["怎么了"]},
-                {"text": "我想 ___ 一下这个计划 ___。", "answers": ["问", "怎么样"]},
-                {"text": "___ 要改一点，不过 ___。", "answers": ["可能", "差不多了"]},
-            ],
+            word_bank=work_word_bank,
+            sentences=work_sentences,
         )
         st.divider()
+        commute_word_bank = (
+            ["怎么", "地铁", "有时候", "公共汽车", "一起", "可以", "地铁站", "八点", "公司"]
+            if use_hanzi_mode
+            else ["zěnme", "dìtiě", "yǒu shíhou", "gōnggòng qìchē", "yìqǐ", "kěyǐ", "dìtiězhàn", "bā diǎn", "gōngsī"]
+        )
+        commute_sentences = [
+            {
+                "text": "你 ___ 去公司？" if use_hanzi_mode else "Nǐ ___ qù gōngsī?",
+                "answers": ["怎么"] if use_hanzi_mode else ["zěnme"],
+                "pinyin_hint": "Nǐ ___ qù gōngsī?" if use_hanzi_mode else "",
+                "english_hint": "How do you get to the office?",
+            },
+            {
+                "text": "我坐 ___，___ 坐 ___。" if use_hanzi_mode else "Wǒ zuò ___, ___ zuò ___.",
+                "answers": ["地铁", "有时候", "公共汽车"] if use_hanzi_mode else ["dìtiě", "yǒu shíhou", "gōnggòng qìchē"],
+                "pinyin_hint": "Wǒ zuò ___, ___ zuò ___." if use_hanzi_mode else "",
+                "english_hint": "I take the subway, and sometimes the bus.",
+            },
+            {
+                "text": "明天 ___ 去吗？" if use_hanzi_mode else "Míngtiān ___ qù ma?",
+                "answers": ["一起"] if use_hanzi_mode else ["yìqǐ"],
+                "pinyin_hint": "Míngtiān ___ qù ma?" if use_hanzi_mode else "",
+                "english_hint": "Do you want to go together tomorrow?",
+            },
+            {
+                "text": "___，___ ___ 见。" if use_hanzi_mode else "___, ___ ___ jiàn.",
+                "answers": ["可以", "地铁站", "八点"] if use_hanzi_mode else ["kěyǐ", "dìtiězhàn", "bā diǎn"],
+                "pinyin_hint": "___, ___ ___ jiàn." if use_hanzi_mode else "",
+                "english_hint": "Sure, see you at the station at 8.",
+            },
+        ]
         render_drag_drop_activity(
             activity_id="daily_commute_fill",
             title="Commute Dialogue Practice",
             prompt="Drag and drop each phrase into the best spot.",
-            word_bank=["怎么", "地铁", "有时候", "公共汽车", "一起", "可以", "地铁站", "八点", "公司"],
-            sentences=[
-                {"text": "你 ___ 去公司？", "answers": ["怎么"]},
-                {"text": "我坐 ___，___ 坐 ___。", "answers": ["地铁", "有时候", "公共汽车"]},
-                {"text": "明天 ___ 去吗？", "answers": ["一起"]},
-                {"text": "___，___ ___ 见。", "answers": ["可以", "地铁站", "八点"]},
-            ],
+            word_bank=commute_word_bank,
+            sentences=commute_sentences,
         )
         st.divider()
+        food_word_bank = (
+            ["吃饭", "还没有", "来不及", "早饭", "先", "餐厅", "不客气", "请"]
+            if use_hanzi_mode
+            else ["chīfàn", "hái méiyǒu", "lái bu jí", "zǎofàn", "xiān", "cāntīng", "bú kèqi", "qǐng"]
+        )
+        food_sentences = [
+            {
+                "text": "你 ___ 了吗？" if use_hanzi_mode else "Nǐ ___ le ma?",
+                "answers": ["吃饭"] if use_hanzi_mode else ["chīfàn"],
+                "pinyin_hint": "Nǐ ___ le ma?" if use_hanzi_mode else "",
+                "english_hint": "Have you eaten?",
+            },
+            {
+                "text": "___，___ 吃 ___。" if use_hanzi_mode else "___, ___ chī ___.",
+                "answers": ["还没有", "来不及", "早饭"] if use_hanzi_mode else ["hái méiyǒu", "lái bu jí", "zǎofàn"],
+                "pinyin_hint": "___, ___ chī ___." if use_hanzi_mode else "",
+                "english_hint": "Not yet, I didn't have time to eat breakfast.",
+            },
+            {
+                "text": "那我们 ___ 去 ___ 吧。" if use_hanzi_mode else "Nà wǒmen ___ qù ___ ba.",
+                "answers": ["先", "餐厅"] if use_hanzi_mode else ["xiān", "cāntīng"],
+                "pinyin_hint": "Nà wǒmen ___ qù ___ ba." if use_hanzi_mode else "",
+                "english_hint": "Then let's go to a restaurant first.",
+            },
+            {
+                "text": "好啊，___，我 ___ 你。" if use_hanzi_mode else "Hǎo a, ___, wǒ ___ nǐ.",
+                "answers": ["不客气", "请"] if use_hanzi_mode else ["bú kèqi", "qǐng"],
+                "pinyin_hint": "Hǎo a, ___, wǒ ___ nǐ." if use_hanzi_mode else "",
+                "english_hint": "Sounds good, no worries, I'll treat you.",
+            },
+        ]
         render_drag_drop_activity(
             activity_id="daily_food_fill",
             title="Food + Social Dialogue Practice",
             prompt="Drag the word bank items into each blank naturally.",
-            word_bank=["吃饭", "还没有", "来不及", "早饭", "先", "餐厅", "不客气", "请"],
-            sentences=[
-                {"text": "你 ___ 了吗？", "answers": ["吃饭"]},
-                {"text": "___，___ 吃 ___。", "answers": ["还没有", "来不及", "早饭"]},
-                {"text": "那我们 ___ 去 ___ 吧。", "answers": ["先", "餐厅"]},
-                {"text": "好啊，___，我 ___ 你。", "answers": ["不客气", "请"]},
-            ],
+            word_bank=food_word_bank,
+            sentences=food_sentences,
         )
 
 with tab_quiz:
     st.markdown("### Quick Quiz")
-    st.caption("Choose quiz mode, prompt style, and question count.")
+    st.caption("Choose quiz mode, prompt style, and question count. Pinyin is always shown in prompts.")
 
     quiz_mode = st.radio(
         "Quiz mode",
         options=["Drag & Drop Cloze", "English Translation"],
         horizontal=True,
     )
-    with_hanzi_prompt = st.toggle("Show Hanzi in prompts", value=True)
+    prompt_mode = st.radio(
+        "Prompt display",
+        options=["Hanzi + Pinyin", "No Hanzi (English + Pinyin hint)"],
+        horizontal=True,
+        key="quiz_prompt_mode",
+    )
+    with_hanzi_prompt = prompt_mode == "Hanzi + Pinyin"
     question_count = st.slider("Number of questions", min_value=8, max_value=60, value=24, step=4)
 
     if quiz_mode == "Drag & Drop Cloze":
@@ -1440,7 +1658,8 @@ with tab_cue:
     st.caption("Front: Hanzi + pinyin + meaning. Back: usage sentence + English translation.")
 
     cue_cols = ["hanzi_simplified", "pinyin", "english_meanings", "example_zh", "example_en"]
-    cue_df = filtered[cue_cols].copy()
+    cue_source = _prioritize_varied_examples(filtered)
+    cue_df = cue_source[cue_cols].copy()
     cue_df = cue_df.dropna(subset=["hanzi_simplified"])
     cue_df = cue_df.drop_duplicates(subset=["hanzi_simplified", "pinyin", "english_meanings"])
     cue_df = cue_df.reset_index(drop=True)
