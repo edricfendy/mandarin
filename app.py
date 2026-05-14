@@ -986,7 +986,14 @@ def render_paginated_drag_drop_activity(activity_id, title, prompt, sentences, w
 
 def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, prompt_style: str):
     use_hanzi_pinyin_prompt = prompt_style == "hanzi_pinyin"
-    work = _apply_quiz_prompt_filter(df=df, question_count=question_count, prompt_style=prompt_style, quiz_kind="cloze")
+    # Cloze sentence content is shared across both modes.
+    # "No pinyin" should show the same Hanzi question, only without pinyin support text.
+    work = _apply_quiz_prompt_filter(
+        df=df,
+        question_count=question_count,
+        prompt_style="hanzi_pinyin",
+        quiz_kind="cloze",
+    )
 
     if work.empty:
         return [], []
@@ -1007,21 +1014,18 @@ def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, prompt_styl
         ex_zh, ex_en = _get_professional_learning_example(row, variant_seed=idx + 11)
         en_base = ex_en or _polish_english_sentence(_primary_meaning(english))
 
-        if use_hanzi_pinyin_prompt:
-            base = ex_zh
-            if answer and answer in base:
-                text = base.replace(answer, "___", 1)
-            else:
-                text = f"{base}  （填空：___）"
-            hanzi_hint = ""
-            pinyin_hint = _build_sentence_pinyin_display(text, expression_lookup) or (f"Target pinyin: {pinyin}" if pinyin else "")
-            english_hint = f"English context: {en_base}" if en_base else f"Meaning: {_primary_meaning(english)}"
+        base = ex_zh
+        if answer and answer in base:
+            text = base.replace(answer, "___", 1)
         else:
-            prompt_template = _NO_PINYIN_CLOZE_PROMPTS[idx % len(_NO_PINYIN_CLOZE_PROMPTS)]
-            text = prompt_template.format(context=en_base)
-            hanzi_hint = f"Target Hanzi: {answer}" if answer else "Target Hanzi unavailable"
-            pinyin_hint = ""
-            english_hint = f"Meaning focus: {_primary_meaning(english)}"
+            text = f"{base}  （填空：___）"
+        hanzi_hint = ""
+        pinyin_hint = (
+            _build_sentence_pinyin_display(text, expression_lookup) or (f"Target pinyin: {pinyin}" if pinyin else "")
+            if use_hanzi_pinyin_prompt
+            else ""
+        )
+        english_hint = f"English context: {en_base}" if en_base else f"Meaning: {_primary_meaning(english)}"
 
         sentences.append(
             {
@@ -1123,18 +1127,38 @@ def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: 
 
 
 def render_cue_card_deck(activity_id: str, cue_df: pd.DataFrame):
+    if "vocab" in globals() and isinstance(vocab, pd.DataFrame) and not vocab.empty:
+        expression_lookup = _build_expression_lookup(vocab)
+    else:
+        expression_lookup = {}
+        for _, row in cue_df.iterrows():
+            hz = "" if pd.isna(row.get("hanzi_simplified", "")) else str(row.get("hanzi_simplified", "")).strip()
+            py = "" if pd.isna(row.get("pinyin", "")) else str(row.get("pinyin", "")).strip()
+            en = "" if pd.isna(row.get("english_meanings", "")) else str(row.get("english_meanings", "")).strip()
+            if hz:
+                expression_lookup[hz] = {
+                    "hanzi": hz,
+                    "pinyin": py,
+                    "english": en,
+                    "length": len(hz),
+                    "hsk": "HSK N/A",
+                    "frequency_rank": 999999,
+                }
+
     data = []
     for idx, row in cue_df.iterrows():
         hanzi = "" if pd.isna(row["hanzi_simplified"]) else str(row["hanzi_simplified"]).strip()
         pinyin = "" if pd.isna(row["pinyin"]) else str(row["pinyin"]).strip()
         meaning = "" if pd.isna(row["english_meanings"]) else str(row["english_meanings"]).strip()
         ex_zh, ex_en = _get_professional_learning_example(row, variant_seed=int(idx) + 205)
+        ex_py = _build_sentence_pinyin_display(ex_zh, expression_lookup) if ex_zh else ""
         data.append(
             {
                 "hanzi": hanzi,
                 "pinyin": pinyin,
                 "meaning": meaning,
                 "ex_zh": ex_zh,
+                "ex_py": ex_py,
                 "ex_en": ex_en,
             }
         )
@@ -1209,6 +1233,12 @@ def render_cue_card_deck(activity_id: str, cue_df: pd.DataFrame):
         font-size: 28px;
         line-height: 1.45;
         color: #111827;
+        margin-bottom: 8px;
+      }}
+      .cue-back-pinyin {{
+        font-size: 20px;
+        line-height: 1.5;
+        color: #334155;
         margin-bottom: 14px;
       }}
       .cue-back-en {{
@@ -1262,6 +1292,9 @@ def render_cue_card_deck(activity_id: str, cue_df: pd.DataFrame):
         .cue-back-zh {{
           font-size: 23px;
         }}
+        .cue-back-pinyin {{
+          font-size: 17px;
+        }}
         .cue-back-en {{
           font-size: 17px;
         }}
@@ -1292,6 +1325,7 @@ def render_cue_card_deck(activity_id: str, cue_df: pd.DataFrame):
           const pinyin = c.pinyin ? esc(c.pinyin) : "—";
           const meaning = c.meaning ? esc(c.meaning) : "—";
           const exZh = c.ex_zh ? esc(c.ex_zh) : "No sentence available.";
+          const exPy = c.ex_py ? esc(c.ex_py) : "No pinyin available.";
           const exEn = c.ex_en ? esc(c.ex_en) : "No English translation available.";
 
           indexEl.textContent = "Card " + (idx + 1) + "/" + cards.length;
@@ -1305,6 +1339,8 @@ def render_cue_card_deck(activity_id: str, cue_df: pd.DataFrame):
             faceEl.innerHTML = `
               <div class="cue-back-label">How to use it in a sentence</div>
               <div class="cue-back-zh">${{exZh}}</div>
+              <div class="cue-back-label">Pinyin</div>
+              <div class="cue-back-pinyin">${{exPy}}</div>
               <div class="cue-back-label">English translation</div>
               <div class="cue-back-en">${{exEn}}</div>
             `;
@@ -2405,7 +2441,7 @@ with tab_quiz:
             cloze_prompt = (
                 "Drag each item to the blank. Hanzi sentence is shown with pinyin support below each line. Word bank is split per page."
                 if prompt_style == "hanzi_pinyin"
-                else "Drag each item to the blank. This no-pinyin mode uses English context with Hanzi hint, and word bank is split per page."
+                else "Drag each item to the blank. This no-pinyin mode uses the exact same Hanzi questions, just without the pinyin line. Word bank is split per page."
             )
             render_paginated_drag_drop_activity(
                 activity_id="quiz_dynamic_cloze",
@@ -2425,7 +2461,7 @@ with tab_quiz:
 
 with tab_cue:
     st.markdown("### Cue Cards")
-    st.caption("Front: Hanzi + pinyin + meaning. Back: usage sentence + English translation.")
+    st.caption("Front: Hanzi + pinyin + meaning. Back: usage sentence + sentence pinyin + English translation.")
 
     cue_cols = ["hanzi_simplified", "pinyin", "english_meanings", "example_zh", "example_en"]
     cue_source = _prioritize_varied_examples(filtered)
