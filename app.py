@@ -1,11 +1,13 @@
 import re
 import unicodedata
+import json
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Mandarin Proficiency Trainer", page_icon="汉", layout="wide")
 
@@ -74,6 +76,171 @@ def fetch_stroke_svg_data(char: str):
         "svg_text": svg_text,
         "source_url": url,
     }
+
+
+def render_word_bank(words):
+    chips = " ".join(
+        [
+            f"<span style='display:inline-block;padding:6px 10px;margin:4px 6px 4px 0;border:1px solid #d1d5db;border-radius:8px;background:#f8fafc;font-weight:600;'>{w}</span>"
+            for w in words
+        ]
+    )
+    st.markdown("**Word Bank**")
+    st.markdown(chips, unsafe_allow_html=True)
+
+
+def _is_blank_correct(user_value, expected):
+    if isinstance(expected, list):
+        return user_value in expected
+    return user_value == expected
+
+
+def _expected_to_text(expected):
+    if isinstance(expected, list):
+        return " / ".join(expected)
+    return expected
+
+
+def render_fill_blank_activity(activity_id, title, prompt, sentences, word_bank):
+    st.markdown(f"#### {title}")
+    st.caption(prompt)
+    render_word_bank(word_bank)
+
+    with st.form(f"{activity_id}_form"):
+        user_picks = []
+        expected_vals = []
+        blank_no = 1
+
+        for i, sentence in enumerate(sentences, start=1):
+            st.markdown(f"**{i}. {sentence['text']}**")
+            for expected in sentence["answers"]:
+                pick = st.selectbox(
+                    f"Blank {blank_no}",
+                    options=["(choose)"] + word_bank,
+                    key=f"{activity_id}_blank_{blank_no}",
+                )
+                user_picks.append(pick)
+                expected_vals.append(expected)
+                blank_no += 1
+
+        submitted = st.form_submit_button("Check Fill-in Answers")
+
+    if submitted:
+        score = 0
+        total = len(expected_vals)
+        st.markdown("**Result**")
+        for idx, (picked, expected) in enumerate(zip(user_picks, expected_vals), start=1):
+            if _is_blank_correct(picked, expected):
+                score += 1
+                st.success(f"Blank {idx}: Correct")
+            else:
+                st.error(f"Blank {idx}: Try again")
+            st.caption(f"Your pick: {picked if picked != '(choose)' else '(empty)'}")
+            st.caption(f"Expected: {_expected_to_text(expected)}")
+        st.markdown(f"**Score: {score}/{total}**")
+        st.progress(score / total if total else 0)
+        if score == total and total > 0:
+            st.balloons()
+
+
+def render_stroke_canvas(char: str):
+    safe_char = json.dumps(char)
+    canvas_html = f"""
+    <div style="padding:8px 0 2px 0;">
+      <div style="font-weight:700;margin-bottom:8px;">Drawing Pad (write stroke by stroke)</div>
+      <canvas id="hanzi-canvas" width="520" height="520" style="border:2px solid #cbd5e1;border-radius:10px;touch-action:none;background:#ffffff;"></canvas>
+      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <button id="clear-btn" style="padding:6px 12px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;cursor:pointer;">Clear</button>
+        <span style="font-size:13px;color:#374151;">Tip: follow the stroke numbers above, then draw each stroke in sequence.</span>
+      </div>
+    </div>
+    <script>
+      const canvas = document.getElementById("hanzi-canvas");
+      const ctx = canvas.getContext("2d");
+      const charToPractice = {safe_char};
+
+      function drawGuide() {{
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        ctx.strokeStyle = "#e5e7eb";
+        ctx.lineWidth = 1;
+
+        const w = canvas.width;
+        const h = canvas.height;
+        const midX = w / 2;
+        const midY = h / 2;
+
+        ctx.beginPath();
+        ctx.moveTo(midX, 0); ctx.lineTo(midX, h);
+        ctx.moveTo(0, midY); ctx.lineTo(w, midY);
+        ctx.moveTo(0, 0); ctx.lineTo(w, h);
+        ctx.moveTo(w, 0); ctx.lineTo(0, h);
+        ctx.stroke();
+
+        ctx.fillStyle = "rgba(148, 163, 184, 0.22)";
+        ctx.font = "260px 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(charToPractice, midX, midY + 8);
+      }}
+
+      drawGuide();
+
+      let drawing = false;
+
+      function getPos(evt) {{
+        const rect = canvas.getBoundingClientRect();
+        const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
+        const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
+        return {{
+          x: clientX - rect.left,
+          y: clientY - rect.top
+        }};
+      }}
+
+      function startDraw(evt) {{
+        evt.preventDefault();
+        drawing = true;
+        const p = getPos(evt);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+      }}
+
+      function draw(evt) {{
+        if (!drawing) return;
+        evt.preventDefault();
+        const p = getPos(evt);
+        ctx.strokeStyle = "#111827";
+        ctx.lineWidth = 8;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+      }}
+
+      function stopDraw(evt) {{
+        if (!drawing) return;
+        evt.preventDefault();
+        drawing = false;
+        ctx.closePath();
+      }}
+
+      canvas.addEventListener("mousedown", startDraw);
+      canvas.addEventListener("mousemove", draw);
+      canvas.addEventListener("mouseup", stopDraw);
+      canvas.addEventListener("mouseleave", stopDraw);
+
+      canvas.addEventListener("touchstart", startDraw, {{ passive: false }});
+      canvas.addEventListener("touchmove", draw, {{ passive: false }});
+      canvas.addEventListener("touchend", stopDraw, {{ passive: false }});
+
+      document.getElementById("clear-btn").addEventListener("click", (e) => {{
+        e.preventDefault();
+        drawGuide();
+      }});
+    </script>
+    """
+    components.html(canvas_html, height=620, scrolling=False)
 
 
 def parse_official_hsk_level(levels_text: str):
@@ -342,7 +509,11 @@ with tab_stroke:
             seq_text = " -> ".join(str(n) for n in stroke_data["sequence"])
             st.markdown(f"**Stroke sequence:** {seq_text}")
 
-        st.image(stroke_data["svg_text"], width=420)
+        preview_col, draw_col = st.columns([1, 1])
+        with preview_col:
+            st.image(stroke_data["svg_text"], width=420)
+        with draw_col:
+            render_stroke_canvas(target_char)
         st.link_button("Open stroke source (SVG)", stroke_data["source_url"])
 
         st.markdown("#### Practice Checklist")
@@ -386,159 +557,121 @@ with tab_stroke:
             )
 
 with tab_convo:
-    st.markdown("### Daily Conversation (Hanzi + Pinyin + English)")
-    conversations = [
-        {
-            "title": "1) Work Conversation",
-            "lines": [
-                ("A", "你现在有空吗？", "Nǐ xiànzài yǒu kòng ma?", "Are you free now?"),
-                ("B", "有，怎么了？", "Yǒu, zěnme le?", "Yes, what's up?"),
-                ("A", "我想问一下这个计划怎么样。", "Wǒ xiǎng wèn yíxià zhège jìhuà zěnmeyàng.", "I want to ask how this plan is."),
-                ("B", "可能要改一点，不过差不多了。", "Kěnéng yào gǎi yìdiǎn, búguò chàbuduō le.", "It may need small changes, but it's almost done."),
-            ],
-        },
-        {
-            "title": "2) Commute Conversation",
-            "lines": [
-                ("A", "你怎么去公司？", "Nǐ zěnme qù gōngsī?", "How do you go to work?"),
-                ("B", "我坐地铁，有时候坐公共汽车。", "Wǒ zuò dìtiě, yǒu shíhou zuò gōnggòng qìchē.", "I take the subway, sometimes the bus."),
-                ("A", "明天一起去吗？", "Míngtiān yìqǐ qù ma?", "Want to go together tomorrow?"),
-                ("B", "可以，地铁站八点见。", "Kěyǐ, dìtiězhàn bā diǎn jiàn.", "Sure, see you at the subway station at 8."),
-            ],
-        },
-        {
-            "title": "3) Social + Food Conversation",
-            "lines": [
-                ("A", "你吃饭了吗？", "Nǐ chīfàn le ma?", "Have you eaten?"),
-                ("B", "还没有，来不及吃早饭。", "Hái méiyǒu, lái bu jí chī zǎofàn.", "Not yet, I didn't have time for breakfast."),
-                ("A", "那我们先去餐厅吧。", "Nà wǒmen xiān qù cāntīng ba.", "Then let's go to a restaurant first."),
-                ("B", "好啊，不客气，我请你。", "Hǎo a, bú kèqi, wǒ qǐng nǐ.", "Sounds good. It's my treat."),
-            ],
-        },
-    ]
+    st.markdown("### Daily Conversation")
+    convo_ref_tab, convo_fill_tab = st.tabs(["Reference (Hanzi + Pinyin + English)", "Fill in the Blank"])
 
-    for convo in conversations:
-        st.markdown(f"#### {convo['title']}")
-        st.markdown("| Speaker | Hanzi | Pinyin | English |")
-        st.markdown("|---|---|---|---|")
-        for role, hanzi, pinyin, english in convo["lines"]:
-            st.markdown(f"| {role} | {hanzi} | {pinyin} | {english} |")
+    with convo_ref_tab:
+        conversations = [
+            {
+                "title": "1) Work Conversation",
+                "lines": [
+                    ("A", "你现在有空吗？", "Nǐ xiànzài yǒu kòng ma?", "Are you free now?"),
+                    ("B", "有，怎么了？", "Yǒu, zěnme le?", "Yes, what's up?"),
+                    ("A", "我想问一下这个计划怎么样。", "Wǒ xiǎng wèn yíxià zhège jìhuà zěnmeyàng.", "I want to ask how this plan is."),
+                    ("B", "可能要改一点，不过差不多了。", "Kěnéng yào gǎi yìdiǎn, búguò chàbuduō le.", "It may need small changes, but it's almost done."),
+                ],
+            },
+            {
+                "title": "2) Commute Conversation",
+                "lines": [
+                    ("A", "你怎么去公司？", "Nǐ zěnme qù gōngsī?", "How do you go to work?"),
+                    ("B", "我坐地铁，有时候坐公共汽车。", "Wǒ zuò dìtiě, yǒu shíhou zuò gōnggòng qìchē.", "I take the subway, sometimes the bus."),
+                    ("A", "明天一起去吗？", "Míngtiān yìqǐ qù ma?", "Want to go together tomorrow?"),
+                    ("B", "可以，地铁站八点见。", "Kěyǐ, dìtiězhàn bā diǎn jiàn.", "Sure, see you at the subway station at 8."),
+                ],
+            },
+            {
+                "title": "3) Social + Food Conversation",
+                "lines": [
+                    ("A", "你吃饭了吗？", "Nǐ chīfàn le ma?", "Have you eaten?"),
+                    ("B", "还没有，来不及吃早饭。", "Hái méiyǒu, lái bu jí chī zǎofàn.", "Not yet, I didn't have time for breakfast."),
+                    ("A", "那我们先去餐厅吧。", "Nà wǒmen xiān qù cāntīng ba.", "Then let's go to a restaurant first."),
+                    ("B", "好啊，不客气，我请你。", "Hǎo a, bú kèqi, wǒ qǐng nǐ.", "Sounds good. It's my treat."),
+                ],
+            },
+        ]
+
+        for convo in conversations:
+            st.markdown(f"#### {convo['title']}")
+            st.markdown("| Speaker | Hanzi | Pinyin | English |")
+            st.markdown("|---|---|---|---|")
+            for role, hanzi, pinyin, english in convo["lines"]:
+                st.markdown(f"| {role} | {hanzi} | {pinyin} | {english} |")
+
+    with convo_fill_tab:
+        render_fill_blank_activity(
+            activity_id="daily_work_fill",
+            title="Work Dialogue Practice",
+            prompt="Fill the blanks from the word bank to rebuild the conversation.",
+            word_bank=["有空", "怎么了", "问", "怎么样", "可能", "差不多了", "一起", "当然"],
+            sentences=[
+                {"text": "你现在 ___ 吗？", "answers": ["有空"]},
+                {"text": "有，___？", "answers": ["怎么了"]},
+                {"text": "我想 ___ 一下这个计划 ___。", "answers": ["问", "怎么样"]},
+                {"text": "___ 要改一点，不过 ___。", "answers": ["可能", "差不多了"]},
+            ],
+        )
+        st.divider()
+        render_fill_blank_activity(
+            activity_id="daily_commute_fill",
+            title="Commute Dialogue Practice",
+            prompt="Complete each line with the best phrase.",
+            word_bank=["怎么", "地铁", "有时候", "公共汽车", "一起", "可以", "地铁站", "八点", "公司"],
+            sentences=[
+                {"text": "你 ___ 去公司？", "answers": ["怎么"]},
+                {"text": "我坐 ___，___ 坐 ___。", "answers": ["地铁", "有时候", "公共汽车"]},
+                {"text": "明天 ___ 去吗？", "answers": ["一起"]},
+                {"text": "___，___ ___ 见。", "answers": ["可以", "地铁站", "八点"]},
+            ],
+        )
+        st.divider()
+        render_fill_blank_activity(
+            activity_id="daily_food_fill",
+            title="Food + Social Dialogue Practice",
+            prompt="Use the word bank to complete the lines naturally.",
+            word_bank=["吃饭", "还没有", "来不及", "早饭", "先", "餐厅", "不客气", "请"],
+            sentences=[
+                {"text": "你 ___ 了吗？", "answers": ["吃饭"]},
+                {"text": "___，___ 吃 ___。", "answers": ["还没有", "来不及", "早饭"]},
+                {"text": "那我们 ___ 去 ___ 吧。", "answers": ["先", "餐厅"]},
+                {"text": "好啊，___，我 ___ 你。", "answers": ["不客气", "请"]},
+            ],
+        )
 
 with tab_quiz:
-    st.markdown("### Quick Quiz: Fill, Choose, and Score")
-    st.caption("Write your own answers, then check instantly. You get score + per-question feedback.")
+    st.markdown("### Quick Quiz: Fill in the Blank Challenge")
+    st.caption("Style: sentence blanks + word bank, like worksheet practice.")
 
-    quiz_items = [
-        {
-            "id": "q1",
-            "type": "text_zh",
-            "prompt": 'Translate to Mandarin: "I am at the subway station."',
-            "answers": ["我在地铁站", "我在地铁站。"],
-            "explain": "Use 在 for location: 我在 + place.",
-        },
-        {
-            "id": "q2",
-            "type": "text_en",
-            "prompt": 'Translate to English: "我们以后再聊。"',
-            "answers": ["lets talk later", "let us talk later", "we can talk later"],
-            "explain": "以后再聊 = talk later / chat later.",
-        },
-        {
-            "id": "q3",
-            "type": "choice",
-            "prompt": "Fill in blank: 我___你打电话。",
-            "options": ["给", "在"],
-            "answer": "给",
-            "explain": "给 + person + 打电话 = call someone.",
-        },
-        {
-            "id": "q4",
-            "type": "choice",
-            "prompt": "Fill in blank: 现在出发还___。",
-            "options": ["来得及", "来不及"],
-            "answer": "来得及",
-            "explain": "来得及 = still enough time.",
-        },
-        {
-            "id": "q5",
-            "type": "choice",
-            "prompt": 'Best reply to "谢谢你" is:',
-            "options": ["不客气", "为什么"],
-            "answer": "不客气",
-            "explain": "不客气 means \"you're welcome.\"",
-        },
-        {
-            "id": "q6",
-            "type": "text_zh",
-            "prompt": 'Translate to Mandarin: "Let\'s go together tomorrow."',
-            "answers": ["我们明天一起去吧", "明天我们一起去吧"],
-            "explain": "一起 + 去 + 吧 makes a natural suggestion.",
-        },
-        {
-            "id": "q7",
-            "type": "text_zh",
-            "prompt": 'Fill in Hanzi: "kěnéng" (means maybe/possibly) = ___',
-            "answers": ["可能"],
-            "explain": "可能 = maybe / possible.",
-        },
-        {
-            "id": "q8",
-            "type": "text_zh",
-            "prompt": 'Complete sentence in Hanzi: 地铁___就在前面。(station)',
-            "answers": ["站", "地铁站"],
-            "explain": "地铁站 = subway station.",
-        },
-    ]
+    render_fill_blank_activity(
+        activity_id="quiz_fill_core",
+        title="Quiz Set A",
+        prompt="Complete all blanks. Focus on high-frequency daily Mandarin patterns.",
+        word_bank=["在", "以后", "给", "来得及", "不客气", "一起", "明天", "地铁站", "可能", "晚到"],
+        sentences=[
+            {"text": "我 ___ 地铁站。", "answers": ["在"]},
+            {"text": "我们 ___ 再聊。", "answers": ["以后"]},
+            {"text": "我 ___ 你打电话。", "answers": ["给"]},
+            {"text": "现在出发还 ___。", "answers": ["来得及"]},
+            {"text": "谢谢你。___。", "answers": ["不客气"]},
+            {"text": "我们 ___ ___ 一起去吧。", "answers": ["明天", "一起"]},
+        ],
+    )
 
-    with st.form("interactive_quiz_form"):
-        user_answers = {}
-        for idx, item in enumerate(quiz_items, start=1):
-            st.markdown(f"**{idx}. {item['prompt']}**")
-            if item["type"] == "choice":
-                user_answers[item["id"]] = st.radio(
-                    "Choose one",
-                    options=item["options"],
-                    key=f"quiz_{item['id']}",
-                    horizontal=True,
-                )
-            else:
-                user_answers[item["id"]] = st.text_input("Your answer", key=f"quiz_{item['id']}")
-        submitted = st.form_submit_button("Check My Answers")
+    st.divider()
 
-    if submitted:
-        score = 0
-        st.markdown("### Result")
-        for idx, item in enumerate(quiz_items, start=1):
-            user_val = user_answers.get(item["id"], "")
-            ok = False
-
-            if item["type"] == "choice":
-                ok = user_val == item["answer"]
-                correct_text = item["answer"]
-            elif item["type"] == "text_en":
-                normalized = normalize_en_answer(user_val)
-                ok = normalized in {normalize_en_answer(ans) for ans in item["answers"]}
-                correct_text = item["answers"][0]
-            else:
-                normalized = normalize_zh_answer(user_val)
-                ok = normalized in {normalize_zh_answer(ans) for ans in item["answers"]}
-                correct_text = item["answers"][0]
-
-            if ok:
-                score += 1
-                st.success(f"{idx}. Correct")
-            else:
-                st.error(f"{idx}. Not yet")
-
-            st.caption(f"Your answer: {user_val if user_val else '(empty)'}")
-            st.caption(f"Suggested answer: {correct_text}")
-            st.caption(f"Tip: {item['explain']}")
-
-        total = len(quiz_items)
-        st.markdown(f"**Score: {score}/{total}**")
-        st.progress(score / total)
-        if score == total:
-            st.balloons()
+    render_fill_blank_activity(
+        activity_id="quiz_fill_plus",
+        title="Quiz Set B (Context + Meaning)",
+        prompt="Mixed blanks from transport, scheduling, and social phrases.",
+        word_bank=["地铁站", "可能", "晚到", "来不及", "电子邮件", "餐厅", "先", "为什么", "怎么样"],
+        sentences=[
+            {"text": "___ 就在前面。", "answers": ["地铁站"]},
+            {"text": "他 ___ 会 ___。", "answers": ["可能", "晚到"]},
+            {"text": "我今天 ___ 吃早饭。", "answers": ["来不及"]},
+            {"text": "请发 ___ 给我。", "answers": ["电子邮件"]},
+            {"text": "那我们 ___ 去 ___ 吧。", "answers": ["先", "餐厅"]},
+        ],
+    )
 
 st.info(
     "Tip: Keep official HSK filter broad, then use Level 1-10 to progressively increase difficulty from high-frequency daily words to advanced low-frequency words."
