@@ -232,7 +232,8 @@ def _is_english_semantic_match(user_answer: str, meaning_text: str, example_en: 
     return False
 
 
-def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, with_hanzi_prompt: bool):
+def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, prompt_style: str):
+    use_hanzi_pinyin_prompt = prompt_style == "hanzi_pinyin"
     work = df.copy()
     work["hanzi_simplified"] = work["hanzi_simplified"].fillna("").astype(str).str.strip()
     work["pinyin"] = work["pinyin"].fillna("").astype(str).str.strip()
@@ -242,7 +243,7 @@ def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, with_hanzi_
     work = work[work["hanzi_simplified"] != ""]
     work = _prioritize_varied_examples(work)
 
-    if with_hanzi_prompt:
+    if use_hanzi_pinyin_prompt:
         work = work[work["example_zh"] != ""]
     else:
         work = work[(work["example_en"] != "") | (work["english_meanings"] != "")]
@@ -262,23 +263,26 @@ def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, with_hanzi_
         english = str(row["english_meanings"]).strip()
         en_base = str(row["example_en"]).strip() or english
 
-        if with_hanzi_prompt:
+        if use_hanzi_pinyin_prompt:
             base = str(row["example_zh"]).strip()
             if answer and answer in base:
                 text = base.replace(answer, "___", 1)
             else:
                 text = f"{base}  (Target word: ___)"
+            hanzi_hint = ""
             pinyin_hint = f"Target pinyin: {pinyin}" if pinyin else "Target pinyin unavailable"
             english_hint = f"English context: {en_base}" if en_base else ""
         else:
             text = f"{en_base}  |  Mandarin word: ___"
-            pinyin_hint = f"Target pinyin: {pinyin}" if pinyin else "Target pinyin unavailable"
+            hanzi_hint = f"Target Hanzi: {answer}" if answer else "Target Hanzi unavailable"
+            pinyin_hint = ""
             english_hint = ""
 
         sentences.append(
             {
                 "text": text,
                 "answers": [answer],
+                "hanzi_hint": hanzi_hint,
                 "pinyin_hint": pinyin_hint,
                 "english_hint": english_hint,
             }
@@ -296,7 +300,8 @@ def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, with_hanzi_
     return sentences, word_bank
 
 
-def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: int, with_hanzi_prompt: bool):
+def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: int, prompt_style: str):
+    use_hanzi_pinyin_prompt = prompt_style == "hanzi_pinyin"
     st.markdown("#### English Translation Quiz")
     st.caption("Type the English meaning. Grading is flexible: close meaning is accepted.")
 
@@ -326,15 +331,15 @@ def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: 
             en_ex = str(row["example_en"]).strip()
             pinyin_line = pinyin if pinyin else "(no pinyin available)"
 
-            if with_hanzi_prompt:
+            if use_hanzi_pinyin_prompt:
                 st.markdown(f"**{i + 1}. Translate:**")
                 st.markdown(f"{hanzi}  \n{pinyin_line}")
                 if zh_ex:
                     st.caption(f"Example: {zh_ex}")
             else:
-                st.markdown(f"**{i + 1}. Translate (no Hanzi shown):** `{pinyin_line}`")
+                st.markdown(f"**{i + 1}. Translate (no pinyin):** `{hanzi}`")
                 if en_ex:
-                    st.caption(f"Usage context: {en_ex}")
+                    st.caption(f"English context: {en_ex}")
 
             user_answers.append(
                 st.text_input(
@@ -1620,7 +1625,7 @@ with tab_convo:
 
 with tab_quiz:
     st.markdown("### Quick Quiz")
-    st.caption("Choose quiz mode, prompt style, and question count. Pinyin is always shown in prompts.")
+    st.caption("Choose quiz mode, prompt style, and question count.")
 
     quiz_mode = st.radio(
         "Quiz mode",
@@ -1629,18 +1634,18 @@ with tab_quiz:
     )
     prompt_mode = st.radio(
         "Prompt display",
-        options=["Hanzi + Pinyin", "No Hanzi (English + Pinyin hint)"],
+        options=["Hanzi + Pinyin", "No Pinyin (English + Hanzi hint)"],
         horizontal=True,
         key="quiz_prompt_mode",
     )
-    with_hanzi_prompt = prompt_mode == "Hanzi + Pinyin"
+    prompt_style = "hanzi_pinyin" if prompt_mode == "Hanzi + Pinyin" else "no_pinyin_en_hanzi_hint"
     question_count = st.slider("Number of questions", min_value=8, max_value=60, value=24, step=4)
 
     if quiz_mode == "Drag & Drop Cloze":
         sentences, word_bank = _prepare_cloze_quiz_items(
             df=filtered,
             question_count=question_count,
-            with_hanzi_prompt=with_hanzi_prompt,
+            prompt_style=prompt_style,
         )
         if not sentences or not word_bank:
             st.warning("Not enough rows for dynamic cloze quiz with current filters.")
@@ -1658,7 +1663,7 @@ with tab_quiz:
             activity_id="quiz_translation",
             df=filtered,
             question_count=question_count,
-            with_hanzi_prompt=with_hanzi_prompt,
+            prompt_style=prompt_style,
         )
 
 with tab_cue:
