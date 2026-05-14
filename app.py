@@ -426,6 +426,297 @@ def _extract_line_learning_chunks(line_text: str, expression_lookup: dict, max_c
     return ordered[:max_items]
 
 
+def _is_hanzi_char(ch: str) -> bool:
+    return bool(re.match(r"[\u4e00-\u9fff]", ch or ""))
+
+
+def _build_sentence_click_tokens(line_text: str, expression_lookup: dict, max_char_len: int = 7):
+    text = "" if not isinstance(line_text, str) else line_text
+    if not text:
+        return []
+
+    tokens = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if not _is_hanzi_char(ch):
+            tokens.append({"text": ch, "clickable": False})
+            i += 1
+            continue
+
+        j = i
+        while j < len(text) and _is_hanzi_char(text[j]):
+            j += 1
+        run = text[i:j]
+        k = 0
+        while k < len(run):
+            matched = None
+            max_size = min(max_char_len, len(run) - k)
+            for size in range(max_size, 0, -1):
+                candidate = run[k : k + size]
+                if candidate in expression_lookup:
+                    matched = candidate
+                    break
+
+            if matched:
+                info = expression_lookup.get(matched, {})
+                primary = _primary_meaning(str(info.get("english", "")))
+                tokens.append(
+                    {
+                        "text": matched,
+                        "clickable": True,
+                        "pinyin": str(info.get("pinyin", "")).strip(),
+                        "meaning_primary": primary,
+                        "meaning_full": str(info.get("english", "")).strip(),
+                        "hsk": str(info.get("hsk", "HSK N/A")).strip() or "HSK N/A",
+                    }
+                )
+                k += len(matched)
+            else:
+                tokens.append({"text": run[k], "clickable": False})
+                k += 1
+        i = j
+
+    return tokens
+
+
+def render_conversation_line_selector(activity_id: str, role: str, hanzi: str, pinyin: str, english: str, expression_lookup: dict):
+    tokens = _build_sentence_click_tokens(hanzi, expression_lookup)
+    if not tokens:
+        st.markdown(f"**{role}** {hanzi}")
+        if pinyin:
+            st.caption(pinyin)
+        if english:
+            st.caption(english)
+        return
+
+    if not any(bool(t.get("clickable")) for t in tokens):
+        st.markdown(f"**{role}** {hanzi}")
+        if pinyin:
+            st.caption(pinyin)
+        if english:
+            st.caption(english)
+        return
+
+    safe_id = re.sub(r"[^a-zA-Z0-9_]+", "_", activity_id)
+    payload = json.dumps(
+        {
+            "role": role,
+            "hanzi": hanzi,
+            "pinyin": pinyin,
+            "english": english,
+            "tokens": tokens,
+            "palette": ["#2563eb", "#0ea5e9", "#16a34a", "#f59e0b", "#14b8a6"],
+        },
+        ensure_ascii=False,
+    )
+
+    html = f"""
+    <div class="dcx-wrap" id="dcx-wrap-{safe_id}">
+      <div class="dcx-selection">
+        <div class="dcx-selection-main">
+          <div id="dcx-selected-pinyin-{safe_id}" class="dcx-selected-pinyin">-</div>
+          <div id="dcx-selected-hanzi-{safe_id}" class="dcx-selected-hanzi">-</div>
+          <div id="dcx-selected-meaning-{safe_id}" class="dcx-selected-meaning">-</div>
+          <div id="dcx-selected-full-{safe_id}" class="dcx-selected-full"></div>
+        </div>
+        <div id="dcx-selected-hsk-{safe_id}" class="dcx-selected-hsk">HSK N/A</div>
+      </div>
+      <div class="dcx-zh-block">
+        <div class="dcx-speaker">{role}</div>
+        <div id="dcx-sentence-{safe_id}" class="dcx-sentence"></div>
+      </div>
+      <div class="dcx-en">{english}</div>
+    </div>
+    <style>
+      .dcx-wrap {{
+        border: 1px solid #dbe2ea;
+        border-radius: 14px;
+        background: #ffffff;
+        padding: 12px;
+        margin-bottom: 10px;
+      }}
+      .dcx-selection {{
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        background: #f8fafc;
+        padding: 12px;
+      }}
+      .dcx-selection-main {{
+        min-width: 0;
+      }}
+      .dcx-selected-pinyin {{
+        font-size: 30px;
+        line-height: 1.2;
+        color: #111827;
+      }}
+      .dcx-selected-hanzi {{
+        font-size: 48px;
+        line-height: 1.1;
+        font-weight: 700;
+        color: #0f172a;
+      }}
+      .dcx-selected-meaning {{
+        margin-top: 2px;
+        font-size: 22px;
+        color: #111827;
+      }}
+      .dcx-selected-full {{
+        margin-top: 6px;
+        font-size: 14px;
+        color: #475569;
+      }}
+      .dcx-selected-hsk {{
+        border: 1px solid #f59e0b;
+        color: #b45309;
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 14px;
+        font-weight: 700;
+        background: #fffbeb;
+        white-space: nowrap;
+      }}
+      .dcx-zh-block {{
+        margin-top: 10px;
+        border-radius: 12px;
+        background: #ffffff;
+      }}
+      .dcx-speaker {{
+        font-size: 16px;
+        font-weight: 700;
+        color: #334155;
+        margin-bottom: 6px;
+      }}
+      .dcx-sentence {{
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        gap: 3px 5px;
+      }}
+      .dcx-token {{
+        border: none;
+        background: transparent;
+        padding: 0 1px;
+        cursor: pointer;
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-end;
+        border-bottom: 2px solid transparent;
+        min-height: 72px;
+      }}
+      .dcx-token-pinyin {{
+        font-size: 14px;
+        line-height: 1.1;
+        color: #475569;
+        margin-bottom: 2px;
+      }}
+      .dcx-token-hanzi {{
+        font-size: 42px;
+        line-height: 1.1;
+        font-weight: 700;
+        color: #0f172a;
+      }}
+      .dcx-token.active {{
+        border-bottom-color: var(--token-color, #2563eb);
+      }}
+      .dcx-plain {{
+        font-size: 42px;
+        line-height: 1.1;
+        color: #111827;
+        padding-bottom: 2px;
+      }}
+      .dcx-en {{
+        margin-top: 10px;
+        border-radius: 10px;
+        background: #f3f4f6;
+        color: #111827;
+        font-size: 20px;
+        line-height: 1.45;
+        padding: 10px 12px;
+      }}
+      @media (max-width: 760px) {{
+        .dcx-selected-pinyin {{ font-size: 24px; }}
+        .dcx-selected-hanzi {{ font-size: 40px; }}
+        .dcx-selected-meaning {{ font-size: 18px; }}
+        .dcx-token-hanzi {{ font-size: 34px; }}
+        .dcx-plain {{ font-size: 34px; }}
+        .dcx-en {{ font-size: 17px; }}
+      }}
+    </style>
+    <script>
+      (() => {{
+        const payload = {payload};
+        const tokens = payload.tokens || [];
+        const palette = payload.palette || ["#2563eb"];
+        const pinyinEl = document.getElementById("dcx-selected-pinyin-{safe_id}");
+        const hanziEl = document.getElementById("dcx-selected-hanzi-{safe_id}");
+        const meaningEl = document.getElementById("dcx-selected-meaning-{safe_id}");
+        const fullEl = document.getElementById("dcx-selected-full-{safe_id}");
+        const hskEl = document.getElementById("dcx-selected-hsk-{safe_id}");
+        const sentenceEl = document.getElementById("dcx-sentence-{safe_id}");
+
+        let activeIdx = tokens.findIndex((t) => t && t.clickable);
+        if (activeIdx < 0) activeIdx = 0;
+
+        const esc = (val) => {{
+          const d = document.createElement("div");
+          d.textContent = val || "";
+          return d.innerHTML;
+        }};
+
+        const renderSelection = () => {{
+          const token = tokens[activeIdx] || {{}};
+          pinyinEl.textContent = token.pinyin || payload.pinyin || "-";
+          hanziEl.textContent = token.text || payload.hanzi || "-";
+          meaningEl.textContent = token.meaning_primary || payload.english || "-";
+          fullEl.textContent =
+            token.meaning_full && token.meaning_full !== token.meaning_primary ? token.meaning_full : "";
+          hskEl.textContent = token.hsk || "HSK N/A";
+        }};
+
+        const renderTokens = () => {{
+          sentenceEl.innerHTML = "";
+          let clickableOrder = 0;
+          tokens.forEach((token, idx) => {{
+            if (token.clickable) {{
+              const btn = document.createElement("button");
+              btn.type = "button";
+              btn.className = "dcx-token" + (idx === activeIdx ? " active" : "");
+              btn.style.setProperty("--token-color", palette[clickableOrder % palette.length]);
+              clickableOrder += 1;
+              btn.innerHTML = `
+                <span class="dcx-token-pinyin">${{esc(token.pinyin || "")}}</span>
+                <span class="dcx-token-hanzi">${{esc(token.text || "")}}</span>
+              `;
+              btn.addEventListener("click", () => {{
+                activeIdx = idx;
+                renderTokens();
+                renderSelection();
+              }});
+              sentenceEl.appendChild(btn);
+            }} else {{
+              const span = document.createElement("span");
+              span.className = "dcx-plain";
+              span.textContent = token.text || "";
+              sentenceEl.appendChild(span);
+            }}
+          }});
+        }};
+
+        renderTokens();
+        renderSelection();
+      }})();
+    </script>
+    """
+
+    components.html(html, height=380, scrolling=False)
+
+
 def _is_english_semantic_match(user_answer: str, meaning_text: str, example_en: str = ""):
     user_norm = normalize_en_answer(user_answer)
     if not user_norm:
@@ -1685,52 +1976,6 @@ with tab_convo:
     convo_ref_tab, convo_fill_tab = st.tabs(["Reference (Hanzi + Pinyin + English)", "Drag & Drop Practice"])
 
     with convo_ref_tab:
-        st.markdown(
-            """
-            <style>
-              .dc-line-card {
-                border: 1px solid #253247;
-                border-radius: 12px;
-                background: rgba(15, 23, 42, 0.35);
-                padding: 12px 14px;
-                margin-bottom: 8px;
-              }
-              .dc-speaker {
-                font-size: 18px;
-                font-weight: 700;
-                color: #dbeafe;
-                margin-bottom: 8px;
-              }
-              .dc-hanzi {
-                font-size: 42px;
-                line-height: 1.35;
-                font-weight: 700;
-                color: #f8fafc;
-                letter-spacing: 1px;
-              }
-              .dc-pinyin {
-                font-size: 24px;
-                line-height: 1.45;
-                color: #cbd5e1;
-                margin-top: 4px;
-              }
-              .dc-english {
-                font-size: 22px;
-                line-height: 1.5;
-                color: #f1f5f9;
-                margin-top: 8px;
-                font-style: italic;
-              }
-              @media (max-width: 780px) {
-                .dc-hanzi { font-size: 34px; }
-                .dc-pinyin { font-size: 20px; }
-                .dc-english { font-size: 18px; }
-              }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
         expression_lookup = _build_expression_lookup(vocab)
 
         conversations = [
@@ -1766,48 +2011,14 @@ with tab_convo:
         for convo_idx, convo in enumerate(conversations):
             st.markdown(f"#### {convo['title']}")
             for line_idx, (role, hanzi, pinyin, english) in enumerate(convo["lines"]):
-                st.markdown(
-                    f"""
-                    <div class="dc-line-card">
-                      <div class="dc-speaker">{role}</div>
-                      <div class="dc-hanzi">{hanzi}</div>
-                      <div class="dc-pinyin">{pinyin if pinyin else "-"}</div>
-                      <div class="dc-english">{english}</div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
+                render_conversation_line_selector(
+                    activity_id=f"convo_inline_{convo_idx}_{line_idx}",
+                    role=role,
+                    hanzi=hanzi,
+                    pinyin=pinyin,
+                    english=english,
+                    expression_lookup=expression_lookup,
                 )
-
-                line_chunks = _extract_line_learning_chunks(hanzi, expression_lookup)
-                if line_chunks:
-                    st.caption("Select a word or phrase from this line (1 char, 2 chars, or longer).")
-                    selected_idx = st.radio(
-                        "Word/Phrase picker",
-                        options=list(range(len(line_chunks))),
-                        format_func=lambda idx: f"{line_chunks[idx]['hanzi']} ({line_chunks[idx]['pinyin'] or '-'})",
-                        horizontal=True,
-                        key=f"convo_chunk_pick_{convo_idx}_{line_idx}",
-                        label_visibility="collapsed",
-                    )
-                    selected = line_chunks[int(selected_idx)]
-                    meaning_primary = _primary_meaning(selected["english"])
-
-                    d1, d2, d3, d4 = st.columns([1, 1, 1, 3])
-                    with d1:
-                        st.markdown(f"**Expression**  \n{selected['hanzi']}")
-                    with d2:
-                        st.markdown(f"**Length**  \n{selected['length']} char")
-                    with d3:
-                        st.markdown(f"**HSK Level**  \n{selected['hsk']}")
-                    with d4:
-                        st.markdown(f"**English Meaning**  \n{meaning_primary if meaning_primary else '-'}")
-
-                    st.caption(f"Pinyin: {selected['pinyin'] if selected['pinyin'] else '-'}")
-                    full_meaning = selected["english"].strip()
-                    if full_meaning and full_meaning != meaning_primary:
-                        st.caption(f"More meanings: {full_meaning}")
-                else:
-                    st.info("No matching expression found in the vocabulary dataset for this line.")
             st.divider()
 
     with convo_fill_tab:
