@@ -170,6 +170,132 @@ def _is_bland_example(example_zh: str, example_en: str = "") -> bool:
     return False
 
 
+_LOW_QUALITY_EN_PATTERNS = (
+    re.compile(r"^I to .+ every day\.$", re.IGNORECASE),
+    re.compile(r"^This is a .+\.$", re.IGNORECASE),
+    re.compile(r"^This is very .+\.$", re.IGNORECASE),
+    re.compile(r"^He comes always\.$", re.IGNORECASE),
+)
+
+_LOW_QUALITY_ZH_PATTERNS = (
+    re.compile(r"^我每天都.+[。！？]?$"),
+    re.compile(r"^这是.+[。！？]?$"),
+    re.compile(r"^这个非常.+[。！？]?$"),
+    re.compile(r"^他总是.+[。！？]?$"),
+)
+
+_NO_PINYIN_CLOZE_PROMPTS = (
+    "{context}  |  Missing Mandarin expression: ___",
+    "Use this context to fill the Mandarin blank: {context}  |  ___",
+    "Context sentence: {context}  |  Target Mandarin chunk: ___",
+    "Choose the Mandarin expression that fits: {context}  |  ___",
+)
+
+_PROFESSIONAL_EXAMPLE_TEMPLATES = (
+    (
+        "在今天的讨论里，我们重点练习了“{hanzi}”这个表达。",
+        "In today's discussion, we focused on the expression \"{hanzi}\" ({meaning}).",
+    ),
+    (
+        "老师提醒我们，使用“{hanzi}”时要注意具体语境。",
+        "Our teacher reminded us to pay attention to context when using \"{hanzi}\" ({meaning}).",
+    ),
+    (
+        "这段对话里，“{hanzi}”是关键表达。",
+        "In this dialogue, \"{hanzi}\" is a key expression meaning \"{meaning}.\"",
+    ),
+    (
+        "为了让句子更自然，我把“{hanzi}”放在了核心位置。",
+        "To make the sentence sound more natural, I placed \"{hanzi}\" ({meaning}) in a key part of the sentence.",
+    ),
+    (
+        "在口语练习中，我们先理解“{hanzi}”，再完成整句表达。",
+        "In speaking practice, we first understand \"{hanzi}\" ({meaning}) and then complete the full sentence.",
+    ),
+)
+
+
+def _primary_meaning(meaning_text: str) -> str:
+    candidates = _split_meaning_candidates(meaning_text)
+    if not candidates:
+        return "this expression"
+    first = candidates[0].strip()
+    first = re.sub(r"^\([^)]*\)\s*", "", first)
+    return first.strip(" .,:;") or "this expression"
+
+
+def _polish_english_sentence(text: str) -> str:
+    cleaned = " ".join(str(text).replace("\u3000", " ").split()).strip()
+    if not cleaned:
+        return ""
+    if cleaned[0].isalpha():
+        cleaned = cleaned[0].upper() + cleaned[1:]
+    if cleaned[-1] not in ".!?":
+        cleaned += "."
+    return cleaned
+
+
+def _polish_chinese_sentence(text: str) -> str:
+    cleaned = "".join(str(text).split()).strip()
+    if not cleaned:
+        return ""
+    if cleaned[-1] not in "。！？":
+        cleaned += "。"
+    return cleaned
+
+
+def _is_low_quality_english_example(example_en: str) -> bool:
+    text = _polish_english_sentence(example_en)
+    if not text:
+        return True
+    if re.search(r"[\u4e00-\u9fff]", text):
+        return True
+    if len(text.split()) <= 2:
+        return True
+    for pattern in _LOW_QUALITY_EN_PATTERNS:
+        if pattern.match(text):
+            return True
+    return False
+
+
+def _is_low_quality_chinese_example(example_zh: str, hanzi: str = "") -> bool:
+    text = _polish_chinese_sentence(example_zh)
+    if not text:
+        return True
+    if hanzi and hanzi not in text:
+        return True
+    if _is_bland_example(text):
+        return True
+    for pattern in _LOW_QUALITY_ZH_PATTERNS:
+        if pattern.match(text):
+            return True
+    return False
+
+
+def _generate_professional_example_pair(hanzi: str, meaning_text: str, variant_seed: int = 0):
+    safe_hanzi = str(hanzi).strip() or "这个词"
+    meaning = _primary_meaning(meaning_text)
+    template = _PROFESSIONAL_EXAMPLE_TEMPLATES[variant_seed % len(_PROFESSIONAL_EXAMPLE_TEMPLATES)]
+    zh = _polish_chinese_sentence(template[0].format(hanzi=safe_hanzi, meaning=meaning))
+    en = _polish_english_sentence(template[1].format(hanzi=safe_hanzi, meaning=meaning))
+    return zh, en
+
+
+def _get_professional_learning_example(row, variant_seed: int = 0):
+    hanzi = "" if pd.isna(row.get("hanzi_simplified", "")) else str(row.get("hanzi_simplified", "")).strip()
+    meaning = "" if pd.isna(row.get("english_meanings", "")) else str(row.get("english_meanings", "")).strip()
+    zh = "" if pd.isna(row.get("example_zh", "")) else str(row.get("example_zh", "")).strip()
+    en = "" if pd.isna(row.get("example_en", "")) else str(row.get("example_en", "")).strip()
+
+    zh_ok = not _is_low_quality_chinese_example(zh, hanzi=hanzi)
+    en_ok = not _is_low_quality_english_example(en)
+
+    if zh_ok and en_ok:
+        return _polish_chinese_sentence(zh), _polish_english_sentence(en)
+
+    return _generate_professional_example_pair(hanzi=hanzi, meaning_text=meaning, variant_seed=variant_seed)
+
+
 def _prioritize_varied_examples(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -210,6 +336,94 @@ def _extract_unique_hanzi_chars(text: str):
             seen.add(ch)
             chars.append(ch)
     return chars
+
+
+def _build_expression_lookup(df: pd.DataFrame):
+    cols = ["hanzi_simplified", "pinyin", "english_meanings", "character_count", "official_hsk", "frequency_rank"]
+    work = df[cols].copy()
+    work["hanzi_simplified"] = work["hanzi_simplified"].fillna("").astype(str).str.strip()
+    work["pinyin"] = work["pinyin"].fillna("").astype(str).str.strip()
+    work["english_meanings"] = work["english_meanings"].fillna("").astype(str).str.strip()
+    work["character_count"] = pd.to_numeric(work["character_count"], errors="coerce").fillna(0).astype(int)
+    work["frequency_rank"] = pd.to_numeric(work["frequency_rank"], errors="coerce").fillna(999999)
+    work = work[work["hanzi_simplified"] != ""]
+    work = work.sort_values(by=["character_count", "frequency_rank"], ascending=[False, True])
+    work = work.drop_duplicates(subset=["hanzi_simplified"], keep="first")
+
+    lookup = {}
+    for _, row in work.iterrows():
+        hanzi = str(row["hanzi_simplified"]).strip()
+        hsk_val = row["official_hsk"]
+        hsk_text = f"HSK {int(hsk_val)}" if pd.notna(hsk_val) else "HSK N/A"
+        lookup[hanzi] = {
+            "hanzi": hanzi,
+            "pinyin": str(row["pinyin"]).strip(),
+            "english": str(row["english_meanings"]).strip(),
+            "length": int(row["character_count"]),
+            "hsk": hsk_text,
+            "frequency_rank": int(row["frequency_rank"]),
+        }
+    return lookup
+
+
+def _extract_line_learning_chunks(line_text: str, expression_lookup: dict, max_char_len: int = 7, max_items: int = 14):
+    if not isinstance(line_text, str) or not line_text.strip():
+        return []
+    hanzi_only = "".join(re.findall(r"[\u4e00-\u9fff]", line_text))
+    if not hanzi_only:
+        return []
+
+    phrase_set = set(expression_lookup.keys())
+    ordered = []
+    seen = set()
+
+    def add_chunk(chunk: str):
+        if chunk in seen:
+            return False
+        info = expression_lookup.get(chunk)
+        if not info:
+            return False
+        seen.add(chunk)
+        ordered.append(info)
+        return True
+
+    i = 0
+    text_len = len(hanzi_only)
+    while i < text_len:
+        matched = None
+        max_len = min(max_char_len, text_len - i)
+        for size in range(max_len, 0, -1):
+            chunk = hanzi_only[i : i + size]
+            if chunk in phrase_set:
+                matched = chunk
+                break
+        if matched:
+            add_chunk(matched)
+            i += len(matched)
+        else:
+            i += 1
+
+    extras = []
+    for start in range(text_len):
+        max_len = min(max_char_len, text_len - start)
+        for size in range(max_len, 1, -1):
+            chunk = hanzi_only[start : start + size]
+            if chunk in phrase_set and chunk not in seen:
+                info = expression_lookup.get(chunk)
+                if info:
+                    extras.append(info)
+    extras = sorted(extras, key=lambda x: (-x["length"], x["frequency_rank"]))
+    for info in extras:
+        if len(ordered) >= max_items:
+            break
+        add_chunk(info["hanzi"])
+
+    for ch in _extract_unique_hanzi_chars(line_text):
+        if len(ordered) >= max_items:
+            break
+        add_chunk(ch)
+
+    return ordered[:max_items]
 
 
 def _is_english_semantic_match(user_answer: str, meaning_text: str, example_en: str = ""):
@@ -269,26 +483,28 @@ def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, prompt_styl
 
     sentences = []
     answers = []
-    for _, row in sampled.iterrows():
+    for idx, row in sampled.iterrows():
         answer = str(row["hanzi_simplified"]).strip()
         pinyin = str(row["pinyin"]).strip()
         english = str(row["english_meanings"]).strip()
-        en_base = str(row["example_en"]).strip() or english
+        ex_zh, ex_en = _get_professional_learning_example(row, variant_seed=idx + 11)
+        en_base = ex_en or _polish_english_sentence(_primary_meaning(english))
 
         if use_hanzi_pinyin_prompt:
-            base = str(row["example_zh"]).strip()
+            base = ex_zh
             if answer and answer in base:
                 text = base.replace(answer, "___", 1)
             else:
-                text = f"{base}  (Target word: ___)"
+                text = f"{base}  （填空：___）"
             hanzi_hint = ""
             pinyin_hint = f"Target pinyin: {pinyin}" if pinyin else "Target pinyin unavailable"
-            english_hint = f"English context: {en_base}" if en_base else ""
+            english_hint = f"English context: {en_base}" if en_base else f"Meaning: {_primary_meaning(english)}"
         else:
-            text = f"{en_base}  |  Mandarin word: ___"
+            prompt_template = _NO_PINYIN_CLOZE_PROMPTS[idx % len(_NO_PINYIN_CLOZE_PROMPTS)]
+            text = prompt_template.format(context=en_base)
             hanzi_hint = f"Target Hanzi: {answer}" if answer else "Target Hanzi unavailable"
             pinyin_hint = ""
-            english_hint = ""
+            english_hint = f"Meaning focus: {_primary_meaning(english)}"
 
         sentences.append(
             {
@@ -336,11 +552,12 @@ def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: 
 
     with st.form(f"{activity_id}_translation_form"):
         user_answers = []
+        example_pairs = []
         for i, row in sampled.iterrows():
             hanzi = str(row["hanzi_simplified"]).strip()
             pinyin = str(row["pinyin"]).strip()
-            zh_ex = str(row["example_zh"]).strip()
-            en_ex = str(row["example_en"]).strip()
+            zh_ex, en_ex = _get_professional_learning_example(row, variant_seed=i + 101)
+            example_pairs.append((zh_ex, en_ex))
             pinyin_line = pinyin if pinyin else "(no pinyin available)"
 
             if use_hanzi_pinyin_prompt:
@@ -368,7 +585,7 @@ def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: 
         st.markdown("**Result**")
         for i, row in sampled.iterrows():
             expected = str(row["english_meanings"]).strip()
-            en_ex = str(row["example_en"]).strip()
+            en_ex = example_pairs[i][1] if i < len(example_pairs) else ""
             user_val = user_answers[i]
             ok = _is_english_semantic_match(user_val, expected, en_ex)
             if ok:
@@ -388,12 +605,11 @@ def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: 
 
 def render_cue_card_deck(activity_id: str, cue_df: pd.DataFrame):
     data = []
-    for _, row in cue_df.iterrows():
+    for idx, row in cue_df.iterrows():
         hanzi = "" if pd.isna(row["hanzi_simplified"]) else str(row["hanzi_simplified"]).strip()
         pinyin = "" if pd.isna(row["pinyin"]) else str(row["pinyin"]).strip()
         meaning = "" if pd.isna(row["english_meanings"]) else str(row["english_meanings"]).strip()
-        ex_zh = "" if pd.isna(row["example_zh"]) else str(row["example_zh"]).strip()
-        ex_en = "" if pd.isna(row["example_en"]) else str(row["example_en"]).strip()
+        ex_zh, ex_en = _get_professional_learning_example(row, variant_seed=int(idx) + 205)
         data.append(
             {
                 "hanzi": hanzi,
@@ -1515,15 +1731,7 @@ with tab_convo:
             unsafe_allow_html=True,
         )
 
-        single_char_lookup = (
-            vocab[vocab["character_count"] == 1][
-                ["hanzi_simplified", "pinyin", "english_meanings", "official_hsk", "frequency_rank"]
-            ]
-            .dropna(subset=["hanzi_simplified"])
-            .sort_values(by=["frequency_rank", "hanzi_simplified"], ascending=[True, True])
-            .drop_duplicates(subset=["hanzi_simplified"], keep="first")
-            .set_index("hanzi_simplified")
-        )
+        expression_lookup = _build_expression_lookup(vocab)
 
         conversations = [
             {
@@ -1570,34 +1778,36 @@ with tab_convo:
                     unsafe_allow_html=True,
                 )
 
-                line_chars = _extract_unique_hanzi_chars(hanzi)
-                if line_chars:
-                    st.caption("Select a character to see its own meaning.")
-                    selected_char = st.radio(
-                        "Character picker",
-                        options=line_chars,
+                line_chunks = _extract_line_learning_chunks(hanzi, expression_lookup)
+                if line_chunks:
+                    st.caption("Select a word or phrase from this line (1 char, 2 chars, or longer).")
+                    selected_idx = st.radio(
+                        "Word/Phrase picker",
+                        options=list(range(len(line_chunks))),
+                        format_func=lambda idx: f"{line_chunks[idx]['hanzi']} ({line_chunks[idx]['pinyin'] or '-'})",
                         horizontal=True,
-                        key=f"convo_char_pick_{convo_idx}_{line_idx}",
+                        key=f"convo_chunk_pick_{convo_idx}_{line_idx}",
                         label_visibility="collapsed",
                     )
+                    selected = line_chunks[int(selected_idx)]
+                    meaning_primary = _primary_meaning(selected["english"])
 
-                    if selected_char in single_char_lookup.index:
-                        row = single_char_lookup.loc[selected_char]
-                        pinyin_val = "" if pd.isna(row["pinyin"]) else str(row["pinyin"]).strip()
-                        english_val = "" if pd.isna(row["english_meanings"]) else str(row["english_meanings"]).strip()
-                        hsk_val = row["official_hsk"]
-                        hsk_text = f"HSK {int(hsk_val)}" if pd.notna(hsk_val) else "HSK N/A"
+                    d1, d2, d3, d4 = st.columns([1, 1, 1, 3])
+                    with d1:
+                        st.markdown(f"**Expression**  \n{selected['hanzi']}")
+                    with d2:
+                        st.markdown(f"**Length**  \n{selected['length']} char")
+                    with d3:
+                        st.markdown(f"**HSK Level**  \n{selected['hsk']}")
+                    with d4:
+                        st.markdown(f"**English Meaning**  \n{meaning_primary if meaning_primary else '-'}")
 
-                        d1, d2, d3 = st.columns([1, 1, 3])
-                        with d1:
-                            st.markdown(f"**Character**  \n{selected_char}")
-                        with d2:
-                            st.markdown(f"**HSK Level**  \n{hsk_text}")
-                        with d3:
-                            st.markdown(f"**English Meaning**  \n{english_val if english_val else '-'}")
-                        st.caption(f"Pinyin: {pinyin_val if pinyin_val else '-'}")
-                    else:
-                        st.info(f"No single-character entry found for `{selected_char}` in the vocabulary dataset.")
+                    st.caption(f"Pinyin: {selected['pinyin'] if selected['pinyin'] else '-'}")
+                    full_meaning = selected["english"].strip()
+                    if full_meaning and full_meaning != meaning_primary:
+                        st.caption(f"More meanings: {full_meaning}")
+                else:
+                    st.info("No matching expression found in the vocabulary dataset for this line.")
             st.divider()
 
     with convo_fill_tab:
