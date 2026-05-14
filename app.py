@@ -1,7 +1,7 @@
 import re
 import unicodedata
 import json
-import html as html_lib
+from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
@@ -115,7 +115,418 @@ def _build_drag_drop_payload(sentences, word_bank):
     return {"sentences": sentence_blocks, "expected_slots": expected_slots, "tokens": tokens}
 
 
-def render_drag_drop_activity(activity_id, title, prompt, sentences, word_bank):
+def _split_meaning_candidates(meaning_text: str):
+    if not isinstance(meaning_text, str):
+        return []
+    raw_parts = re.split(r"[;/|；]+", meaning_text)
+    parts = [p.strip() for p in raw_parts if p and p.strip()]
+    # Keep short meaning units to make matching robust.
+    dedup = []
+    seen = set()
+    for part in parts:
+        key = normalize_en_answer(part)
+        if key and key not in seen:
+            seen.add(key)
+            dedup.append(part)
+    return dedup
+
+
+def _is_english_semantic_match(user_answer: str, meaning_text: str, example_en: str = ""):
+    user_norm = normalize_en_answer(user_answer)
+    if not user_norm:
+        return False
+
+    candidates = _split_meaning_candidates(meaning_text)
+    if isinstance(example_en, str) and example_en.strip():
+        candidates.append(example_en.strip())
+
+    for cand in candidates:
+        cand_norm = normalize_en_answer(cand)
+        if not cand_norm:
+            continue
+
+        if user_norm == cand_norm:
+            return True
+        if len(user_norm) >= 4 and (user_norm in cand_norm or cand_norm in user_norm):
+            return True
+
+        ratio = SequenceMatcher(a=user_norm, b=cand_norm).ratio()
+        if ratio >= 0.74:
+            return True
+
+        user_tokens = set(user_norm.split())
+        cand_tokens = set(cand_norm.split())
+        if cand_tokens:
+            overlap = user_tokens.intersection(cand_tokens)
+            if len(overlap) >= 1 and (len(overlap) / max(len(cand_tokens), 1)) >= 0.5:
+                return True
+    return False
+
+
+def _prepare_cloze_quiz_items(df: pd.DataFrame, question_count: int, with_hanzi_prompt: bool):
+    work = df.copy()
+    work["hanzi_simplified"] = work["hanzi_simplified"].fillna("").astype(str).str.strip()
+    work["pinyin"] = work["pinyin"].fillna("").astype(str).str.strip()
+    work["english_meanings"] = work["english_meanings"].fillna("").astype(str).str.strip()
+    work["example_zh"] = work["example_zh"].fillna("").astype(str).str.strip()
+    work["example_en"] = work["example_en"].fillna("").astype(str).str.strip()
+    work = work[work["hanzi_simplified"] != ""]
+
+    if with_hanzi_prompt:
+        work = work[work["example_zh"] != ""]
+    else:
+        work = work[(work["example_en"] != "") | (work["english_meanings"] != "")]
+
+    if work.empty:
+        return [], []
+
+    sample_size = min(question_count, len(work))
+    sampled = work.sample(sample_size, random_state=42).reset_index(drop=True)
+
+    sentences = []
+    answers = []
+    for _, row in sampled.iterrows():
+        answer = str(row["hanzi_simplified"]).strip()
+        pinyin = str(row["pinyin"]).strip()
+        english = str(row["english_meanings"]).strip()
+
+        if with_hanzi_prompt:
+            base = str(row["example_zh"]).strip()
+            if answer and answer in base:
+                text = base.replace(answer, "___", 1)
+            else:
+                text = f"{base}  (Target word: ___)"
+        else:
+            en_base = str(row["example_en"]).strip() or english
+            clue = f"Pinyin hint: {pinyin}" if pinyin else "Pinyin hint unavailable"
+            text = f"{en_base}  |  {clue}  |  Mandarin word: ___"
+
+        sentences.append({"text": text, "answers": [answer]})
+        answers.append(answer)
+
+    # Add distractors so the bank is larger than question count.
+    extra_pool = work[~work["hanzi_simplified"].isin(set(answers))]["hanzi_simplified"].dropna().astype(str)
+    extra_pool = [x.strip() for x in extra_pool.tolist() if x and x.strip()]
+    extra_pool = list(dict.fromkeys(extra_pool))
+    extra_count = min(max(6, int(question_count * 0.35)), len(extra_pool))
+    distractors = extra_pool[:extra_count]
+
+    word_bank = list(dict.fromkeys(answers + distractors))
+    return sentences, word_bank
+
+
+def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: int, with_hanzi_prompt: bool):
+    st.markdown("#### English Translation Quiz")
+    st.caption("Type the English meaning. Grading is flexible: close meaning is accepted.")
+
+    work = df.copy()
+    work["hanzi_simplified"] = work["hanzi_simplified"].fillna("").astype(str).str.strip()
+    work["pinyin"] = work["pinyin"].fillna("").astype(str).str.strip()
+    work["english_meanings"] = work["english_meanings"].fillna("").astype(str).str.strip()
+    work["example_zh"] = work["example_zh"].fillna("").astype(str).str.strip()
+    work["example_en"] = work["example_en"].fillna("").astype(str).str.strip()
+    work = work[(work["hanzi_simplified"] != "") & (work["english_meanings"] != "")]
+
+    if work.empty:
+        st.warning("Not enough vocabulary rows for translation quiz with current filters.")
+        return
+
+    sample_size = min(question_count, len(work))
+    sampled = work.sample(sample_size, random_state=99).reset_index(drop=True)
+
+    with st.form(f"{activity_id}_translation_form"):
+        user_answers = []
+        for i, row in sampled.iterrows():
+            hanzi = str(row["hanzi_simplified"]).strip()
+            pinyin = str(row["pinyin"]).strip()
+            zh_ex = str(row["example_zh"]).strip()
+            en_ex = str(row["example_en"]).strip()
+
+            if with_hanzi_prompt:
+                st.markdown(f"**{i + 1}. Translate:** `{hanzi}` ({pinyin})")
+                if zh_ex:
+                    st.caption(f"Example: {zh_ex}")
+            else:
+                st.markdown(f"**{i + 1}. Translate (no Hanzi shown):** `{pinyin if pinyin else 'no pinyin'}`")
+                if en_ex:
+                    st.caption(f"Usage context: {en_ex}")
+
+            user_answers.append(
+                st.text_input(
+                    f"Answer {i + 1}",
+                    key=f"{activity_id}_ans_{i}",
+                    placeholder="Type English meaning",
+                )
+            )
+
+        submitted = st.form_submit_button("Check Translation Answers")
+
+    if submitted:
+        score = 0
+        st.markdown("**Result**")
+        for i, row in sampled.iterrows():
+            expected = str(row["english_meanings"]).strip()
+            en_ex = str(row["example_en"]).strip()
+            user_val = user_answers[i]
+            ok = _is_english_semantic_match(user_val, expected, en_ex)
+            if ok:
+                score += 1
+                st.success(f"Q{i + 1}: Accepted")
+            else:
+                st.error(f"Q{i + 1}: Not matched yet")
+            st.caption(f"Your answer: {user_val if user_val.strip() else '(empty)'}")
+            st.caption(f"Accepted meanings: {expected}")
+
+        total = len(sampled)
+        st.markdown(f"**Score: {score}/{total}**")
+        st.progress(score / total if total else 0)
+        if score == total and total > 0:
+            st.balloons()
+
+
+def render_cue_card_deck(activity_id: str, cue_df: pd.DataFrame):
+    data = []
+    for _, row in cue_df.iterrows():
+        hanzi = "" if pd.isna(row["hanzi_simplified"]) else str(row["hanzi_simplified"]).strip()
+        pinyin = "" if pd.isna(row["pinyin"]) else str(row["pinyin"]).strip()
+        meaning = "" if pd.isna(row["english_meanings"]) else str(row["english_meanings"]).strip()
+        ex_zh = "" if pd.isna(row["example_zh"]) else str(row["example_zh"]).strip()
+        ex_en = "" if pd.isna(row["example_en"]) else str(row["example_en"]).strip()
+        data.append(
+            {
+                "hanzi": hanzi,
+                "pinyin": pinyin,
+                "meaning": meaning,
+                "ex_zh": ex_zh,
+                "ex_en": ex_en,
+            }
+        )
+
+    if not data:
+        st.warning("No cue cards available for current filters.")
+        return
+
+    safe_id = re.sub(r"[^a-zA-Z0-9_]+", "_", activity_id)
+    payload = json.dumps(data, ensure_ascii=False)
+    html = f"""
+    <div class="cue-wrap" id="cue-wrap-{safe_id}">
+      <div class="cue-help">Tap anywhere on the card to flip front/back. Use arrows inside card for previous/next.</div>
+      <div id="cue-index-{safe_id}" class="cue-index"></div>
+      <div id="cue-card-{safe_id}" class="cue-card" role="button" tabindex="0">
+        <button id="cue-prev-{safe_id}" class="cue-arrow cue-arrow-left" aria-label="Previous">◀</button>
+        <button id="cue-next-{safe_id}" class="cue-arrow cue-arrow-right" aria-label="Next">▶</button>
+        <div id="cue-face-{safe_id}" class="cue-face"></div>
+      </div>
+      <div class="cue-small-actions">
+        <button id="cue-random-{safe_id}" type="button">Random</button>
+      </div>
+    </div>
+    <style>
+      .cue-wrap {{
+        width: 100%;
+      }}
+      .cue-help {{
+        font-size: 13px;
+        color: #9ca3af;
+        margin-bottom: 8px;
+      }}
+      .cue-index {{
+        font-size: 13px;
+        color: #9ca3af;
+        margin-bottom: 8px;
+      }}
+      .cue-card {{
+        position: relative;
+        border: 1px solid #dbe2ea;
+        border-radius: 14px;
+        background: #f8fafc;
+        min-height: 280px;
+        padding: 28px 52px;
+        cursor: pointer;
+        user-select: none;
+      }}
+      .cue-face-front-hanzi {{
+        font-size: 56px;
+        line-height: 1.1;
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 10px;
+      }}
+      .cue-face-front-pinyin {{
+        font-size: 24px;
+        font-weight: 600;
+        color: #1f2937;
+        margin-bottom: 10px;
+      }}
+      .cue-face-front-meaning {{
+        font-size: 18px;
+        color: #111827;
+      }}
+      .cue-back-label {{
+        font-size: 14px;
+        font-weight: 700;
+        color: #334155;
+        margin-bottom: 6px;
+      }}
+      .cue-back-zh {{
+        font-size: 28px;
+        line-height: 1.45;
+        color: #111827;
+        margin-bottom: 14px;
+      }}
+      .cue-back-en {{
+        font-size: 18px;
+        line-height: 1.5;
+        color: #111827;
+      }}
+      .cue-arrow {{
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 34px;
+        height: 34px;
+        border: 1px solid #94a3b8;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.93);
+        color: #111827;
+        font-weight: 700;
+        cursor: pointer;
+      }}
+      .cue-arrow-left {{
+        left: 12px;
+      }}
+      .cue-arrow-right {{
+        right: 12px;
+      }}
+      .cue-small-actions {{
+        margin-top: 8px;
+        display: flex;
+        justify-content: flex-end;
+      }}
+      .cue-small-actions button {{
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        background: #ffffff;
+        color: #111827;
+        padding: 5px 10px;
+        cursor: pointer;
+      }}
+      @media (max-width: 680px) {{
+        .cue-card {{
+          min-height: 250px;
+          padding: 20px 44px;
+        }}
+        .cue-face-front-hanzi {{
+          font-size: 44px;
+        }}
+        .cue-face-front-pinyin {{
+          font-size: 20px;
+        }}
+        .cue-back-zh {{
+          font-size: 23px;
+        }}
+        .cue-back-en {{
+          font-size: 17px;
+        }}
+      }}
+    </style>
+    <script>
+      (() => {{
+        const cards = {payload};
+        const indexEl = document.getElementById("cue-index-{safe_id}");
+        const cardEl = document.getElementById("cue-card-{safe_id}");
+        const faceEl = document.getElementById("cue-face-{safe_id}");
+        const prevBtn = document.getElementById("cue-prev-{safe_id}");
+        const nextBtn = document.getElementById("cue-next-{safe_id}");
+        const randomBtn = document.getElementById("cue-random-{safe_id}");
+
+        let idx = 0;
+        let showBack = false;
+
+        const esc = (val) => {{
+          const d = document.createElement("div");
+          d.textContent = val || "";
+          return d.innerHTML;
+        }};
+
+        const render = () => {{
+          const c = cards[idx] || {{}};
+          const hanzi = c.hanzi ? esc(c.hanzi) : "—";
+          const pinyin = c.pinyin ? esc(c.pinyin) : "—";
+          const meaning = c.meaning ? esc(c.meaning) : "—";
+          const exZh = c.ex_zh ? esc(c.ex_zh) : "No sentence available.";
+          const exEn = c.ex_en ? esc(c.ex_en) : "No English translation available.";
+
+          indexEl.textContent = "Card " + (idx + 1) + "/" + cards.length;
+          if (!showBack) {{
+            faceEl.innerHTML = `
+              <div class="cue-face-front-hanzi">${{hanzi}}</div>
+              <div class="cue-face-front-pinyin">${{pinyin}}</div>
+              <div class="cue-face-front-meaning">${{meaning}}</div>
+            `;
+          }} else {{
+            faceEl.innerHTML = `
+              <div class="cue-back-label">How to use it in a sentence</div>
+              <div class="cue-back-zh">${{exZh}}</div>
+              <div class="cue-back-label">English translation</div>
+              <div class="cue-back-en">${{exEn}}</div>
+            `;
+          }}
+        }};
+
+        const move = (step) => {{
+          idx = (idx + step + cards.length) % cards.length;
+          showBack = false;
+          render();
+        }};
+
+        cardEl.addEventListener("click", (evt) => {{
+          if (evt.target === prevBtn || evt.target === nextBtn || evt.target === randomBtn) {{
+            return;
+          }}
+          showBack = !showBack;
+          render();
+        }});
+
+        cardEl.addEventListener("keydown", (evt) => {{
+          if (evt.key === "Enter" || evt.key === " ") {{
+            evt.preventDefault();
+            showBack = !showBack;
+            render();
+          }} else if (evt.key === "ArrowLeft") {{
+            evt.preventDefault();
+            move(-1);
+          }} else if (evt.key === "ArrowRight") {{
+            evt.preventDefault();
+            move(1);
+          }}
+        }});
+
+        prevBtn.addEventListener("click", (evt) => {{
+          evt.stopPropagation();
+          move(-1);
+        }});
+
+        nextBtn.addEventListener("click", (evt) => {{
+          evt.stopPropagation();
+          move(1);
+        }});
+
+        randomBtn.addEventListener("click", (evt) => {{
+          evt.stopPropagation();
+          idx = Math.floor(Math.random() * cards.length);
+          showBack = false;
+          render();
+        }});
+
+        render();
+      }})();
+    </script>
+    """
+    components.html(html, height=470, scrolling=False)
+
+
+def render_drag_drop_activity(activity_id, title, prompt, sentences, word_bank, height=None):
     st.markdown(f"#### {title}")
     st.caption(prompt)
 
@@ -456,7 +867,10 @@ def render_drag_drop_activity(activity_id, title, prompt, sentences, word_bank):
     </script>
     """
 
-    components.html(html, height=720, scrolling=False)
+    if height is None:
+        estimated = 300 + int(len(sentences) * 78)
+        height = max(560, min(estimated, 1700))
+    components.html(html, height=int(height), scrolling=True)
 
 
 def render_stroke_checker(char: str):
@@ -865,11 +1279,7 @@ with tab_stroke:
             seq_text = " -> ".join(str(n) for n in stroke_data["sequence"])
             st.markdown(f"**Stroke sequence:** {seq_text}")
 
-        preview_col, draw_col = st.columns([1, 1])
-        with preview_col:
-            st.image(stroke_data["svg_text"], width=420)
-        with draw_col:
-            render_stroke_checker(target_char)
+        render_stroke_checker(target_char)
         st.link_button("Open stroke source (SVG)", stroke_data["source_url"])
 
         related = filtered[filtered["hanzi_simplified"].astype(str).str.contains(re.escape(target_char), regex=True, na=False)].copy()
@@ -989,39 +1399,41 @@ with tab_convo:
         )
 
 with tab_quiz:
-    st.markdown("### Quick Quiz: Drag and Drop Challenge")
-    st.caption("Style: drag the word bank into each blank and check your score.")
+    st.markdown("### Quick Quiz")
+    st.caption("Choose quiz mode, prompt style, and question count.")
 
-    render_drag_drop_activity(
-        activity_id="quiz_fill_core",
-        title="Quiz Set A",
-        prompt="Complete all blanks. Focus on high-frequency daily Mandarin patterns.",
-        word_bank=["在", "以后", "给", "来得及", "不客气", "一起", "明天", "地铁站", "可能", "晚到"],
-        sentences=[
-            {"text": "我 ___ 地铁站。", "answers": ["在"]},
-            {"text": "我们 ___ 再聊。", "answers": ["以后"]},
-            {"text": "我 ___ 你打电话。", "answers": ["给"]},
-            {"text": "现在出发还 ___。", "answers": ["来得及"]},
-            {"text": "谢谢你。___。", "answers": ["不客气"]},
-            {"text": "我们 ___ ___ 一起去吧。", "answers": ["明天", "一起"]},
-        ],
+    quiz_mode = st.radio(
+        "Quiz mode",
+        options=["Drag & Drop Cloze", "English Translation"],
+        horizontal=True,
     )
+    with_hanzi_prompt = st.toggle("Show Hanzi in prompts", value=True)
+    question_count = st.slider("Number of questions", min_value=8, max_value=60, value=24, step=4)
 
-    st.divider()
-
-    render_drag_drop_activity(
-        activity_id="quiz_fill_plus",
-        title="Quiz Set B (Context + Meaning)",
-        prompt="Mixed blanks from transport, scheduling, and social phrases.",
-        word_bank=["地铁站", "可能", "晚到", "来不及", "电子邮件", "餐厅", "先", "为什么", "怎么样"],
-        sentences=[
-            {"text": "___ 就在前面。", "answers": ["地铁站"]},
-            {"text": "他 ___ 会 ___。", "answers": ["可能", "晚到"]},
-            {"text": "我今天 ___ 吃早饭。", "answers": ["来不及"]},
-            {"text": "请发 ___ 给我。", "answers": ["电子邮件"]},
-            {"text": "那我们 ___ 去 ___ 吧。", "answers": ["先", "餐厅"]},
-        ],
-    )
+    if quiz_mode == "Drag & Drop Cloze":
+        sentences, word_bank = _prepare_cloze_quiz_items(
+            df=filtered,
+            question_count=question_count,
+            with_hanzi_prompt=with_hanzi_prompt,
+        )
+        if not sentences or not word_bank:
+            st.warning("Not enough rows for dynamic cloze quiz with current filters.")
+        else:
+            render_drag_drop_activity(
+                activity_id="quiz_dynamic_cloze",
+                title="Dynamic Cloze Quiz",
+                prompt="Drag each item to the blank. This set is generated from your current filtered vocabulary.",
+                sentences=sentences,
+                word_bank=word_bank,
+                height=min(1700, 340 + int(len(sentences) * 72)),
+            )
+    else:
+        render_translation_quiz(
+            activity_id="quiz_translation",
+            df=filtered,
+            question_count=question_count,
+            with_hanzi_prompt=with_hanzi_prompt,
+        )
 
 with tab_cue:
     st.markdown("### Cue Cards")
@@ -1033,73 +1445,7 @@ with tab_cue:
     cue_df = cue_df.drop_duplicates(subset=["hanzi_simplified", "pinyin", "english_meanings"])
     cue_df = cue_df.reset_index(drop=True)
 
-    if cue_df.empty:
-        st.warning("No cue cards available for the current filters.")
-    else:
-        if "cue_card_index" not in st.session_state:
-            st.session_state["cue_card_index"] = 0
-        if "cue_card_show_back" not in st.session_state:
-            st.session_state["cue_card_show_back"] = False
-
-        total_cards = len(cue_df)
-        st.session_state["cue_card_index"] = st.session_state["cue_card_index"] % total_cards
-
-        b1, b2, b3, b4 = st.columns([1, 1, 1, 2])
-        with b1:
-            if st.button("Previous", key="cue_prev"):
-                st.session_state["cue_card_index"] = (st.session_state["cue_card_index"] - 1) % total_cards
-                st.session_state["cue_card_show_back"] = False
-        with b2:
-            if st.button("Next", key="cue_next"):
-                st.session_state["cue_card_index"] = (st.session_state["cue_card_index"] + 1) % total_cards
-                st.session_state["cue_card_show_back"] = False
-        with b3:
-            if st.button("Random", key="cue_random"):
-                st.session_state["cue_card_index"] = int(cue_df.sample(1).index[0])
-                st.session_state["cue_card_show_back"] = False
-        with b4:
-            if st.button("Flip Front/Back", key="cue_flip"):
-                st.session_state["cue_card_show_back"] = not st.session_state["cue_card_show_back"]
-
-        idx = st.session_state["cue_card_index"]
-        row = cue_df.iloc[idx]
-
-        hanzi = "" if pd.isna(row["hanzi_simplified"]) else str(row["hanzi_simplified"]).strip()
-        pinyin = "" if pd.isna(row["pinyin"]) else str(row["pinyin"]).strip()
-        meaning = "" if pd.isna(row["english_meanings"]) else str(row["english_meanings"]).strip()
-        ex_zh = "" if pd.isna(row["example_zh"]) else str(row["example_zh"]).strip()
-        ex_en = "" if pd.isna(row["example_en"]) else str(row["example_en"]).strip()
-        hanzi_html = html_lib.escape(hanzi) if hanzi else "—"
-        pinyin_html = html_lib.escape(pinyin) if pinyin else "—"
-        meaning_html = html_lib.escape(meaning) if meaning else "—"
-        ex_zh_html = html_lib.escape(ex_zh) if ex_zh else "No sentence available."
-        ex_en_html = html_lib.escape(ex_en) if ex_en else "No English translation available."
-
-        st.caption(f"Card {idx + 1}/{total_cards}")
-
-        if not st.session_state["cue_card_show_back"]:
-            st.markdown(
-                f"""
-                <div style="border:1px solid #dbe2ea;border-radius:14px;padding:22px;background:#f9fbfd;min-height:260px;">
-                  <div style="font-size:54px;line-height:1.1;font-weight:700;margin-bottom:10px;">{hanzi_html}</div>
-                  <div style="font-size:22px;font-weight:600;color:#1f2937;margin-bottom:10px;">{pinyin_html}</div>
-                  <div style="font-size:18px;color:#0f172a;">{meaning_html}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                f"""
-                <div style="border:1px solid #dbe2ea;border-radius:14px;padding:22px;background:#f8fafc;min-height:260px;">
-                  <div style="font-size:15px;font-weight:700;color:#334155;margin-bottom:6px;">How to use it in a sentence</div>
-                  <div style="font-size:26px;line-height:1.4;margin-bottom:12px;">{ex_zh_html}</div>
-                  <div style="font-size:15px;font-weight:700;color:#334155;margin-bottom:6px;">English translation</div>
-                  <div style="font-size:18px;line-height:1.5;">{ex_en_html}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    render_cue_card_deck(activity_id="cue_cards_deck", cue_df=cue_df)
 
 st.info(
     "Tip: Keep official HSK filter broad, then use Level 1-10 to progressively increase difficulty from high-frequency daily words to advanced low-frequency words."
