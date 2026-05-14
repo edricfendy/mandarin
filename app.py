@@ -1064,6 +1064,8 @@ def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: 
     sample_size = min(question_count, len(work))
     top_pool_size = min(len(work), max(sample_size * 4, sample_size))
     sampled = work.head(top_pool_size).sample(sample_size, random_state=99).reset_index(drop=True)
+    expression_lookup_source = vocab if "vocab" in globals() else work
+    expression_lookup = _build_expression_lookup(expression_lookup_source)
 
     with st.form(f"{activity_id}_translation_form"):
         user_answers = []
@@ -1076,10 +1078,11 @@ def render_translation_quiz(activity_id: str, df: pd.DataFrame, question_count: 
             pinyin_line = pinyin if pinyin else "(no pinyin available)"
 
             if use_hanzi_pinyin_prompt:
-                st.markdown(f"**{i + 1}. Translate:**")
-                st.markdown(f"{hanzi}  \n{pinyin_line}")
-                if zh_ex:
-                    st.caption(f"Example: {zh_ex}")
+                sentence_zh = zh_ex if zh_ex else f"请用“{hanzi}”完成句子。"
+                sentence_pinyin = _build_sentence_pinyin_display(sentence_zh, expression_lookup) or pinyin_line
+                st.markdown(f"**{i + 1}. Translate (full sentence):**")
+                st.markdown(f"{sentence_zh}  \n{sentence_pinyin}")
+                st.caption(f"Target word: {hanzi} ({pinyin_line})")
             else:
                 st.markdown(f"**{i + 1}. Translate (no pinyin):** `{hanzi}`")
                 st.caption(f"Hanzi hint: {hanzi}")
