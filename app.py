@@ -1,5 +1,5 @@
-import math
 import re
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
@@ -8,6 +8,16 @@ import streamlit as st
 st.set_page_config(page_title="Mandarin Proficiency Trainer", page_icon="汉", layout="wide")
 
 DATA_PATH = Path(__file__).with_name("hsk_all_by_length.csv")
+
+
+def normalize_pinyin(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    normalized = unicodedata.normalize("NFD", text.lower())
+    without_tones = "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+    clean = re.sub(r"[^a-z0-9 ]+", " ", without_tones)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean
 
 
 def parse_official_hsk_level(levels_text: str):
@@ -41,6 +51,7 @@ def load_data(path: Path) -> pd.DataFrame:
     # Custom proficiency levels 1-10 based on usage frequency.
     rank_order = df["frequency_rank"].rank(method="first", ascending=True)
     df["proficiency_10"] = pd.qcut(rank_order, 10, labels=list(range(1, 11))).astype(int)
+    df["pinyin_key"] = df["pinyin"].fillna("").astype(str).apply(normalize_pinyin)
 
     def length_label(n: int) -> str:
         if n == 1:
@@ -92,10 +103,15 @@ with st.sidebar:
     )
 
     keyword = st.text_input("Search Hanzi / Pinyin / English", value="").strip()
+    family_query = st.text_input(
+        "Character Family Search (e.g. 新 or xin)",
+        value="",
+        help="Shows same-character/same-syllable families, ordered by 1 char -> 2 chars -> 3+ chars.",
+    ).strip()
 
     sort_mode = st.selectbox(
         "Sort By",
-        options=["Frequency (common first)", "Hanzi", "Pinyin", "Proficiency Level"],
+        options=["Alphabetical (Pinyin A-Z)", "Alphabetical (Hanzi)", "Frequency (common first)", "Proficiency Level"],
         index=0,
     )
 
@@ -118,12 +134,55 @@ if keyword:
     )
     filtered = filtered[mask]
 
-if sort_mode == "Frequency (common first)":
+if family_query:
+    has_hanzi = bool(re.search(r"[\u4e00-\u9fff]", family_query))
+
+    if has_hanzi:
+        family_char = next((ch for ch in family_query if re.match(r"[\u4e00-\u9fff]", ch)), "")
+        if family_char:
+            mask = filtered["hanzi_simplified"].astype(str).str.contains(re.escape(family_char), regex=True, na=False)
+            filtered = filtered[mask].copy()
+            filtered["family_priority"] = 3
+            filtered.loc[filtered["hanzi_simplified"] == family_char, "family_priority"] = 0
+            filtered.loc[
+                (filtered["hanzi_simplified"] != family_char)
+                & filtered["hanzi_simplified"].astype(str).str.startswith(family_char, na=False),
+                "family_priority",
+            ] = 1
+            filtered.loc[
+                (filtered["family_priority"] == 3)
+                & filtered["hanzi_simplified"].astype(str).str.contains(re.escape(family_char), regex=True, na=False),
+                "family_priority",
+            ] = 2
+    else:
+        query_key = normalize_pinyin(family_query)
+        if query_key:
+            pinyin_tokens = filtered["pinyin_key"].fillna("")
+
+            exact_single = (filtered["character_count"] == 1) & (pinyin_tokens == query_key)
+            starts_with_token = pinyin_tokens.str.startswith(query_key + " ", na=False) | (pinyin_tokens == query_key)
+            token_contains = pinyin_tokens.str.contains(rf"(^|\s){re.escape(query_key)}($|\s)", regex=True, na=False)
+            partial_contains = pinyin_tokens.str.contains(re.escape(query_key), regex=True, na=False)
+
+            mask = exact_single | starts_with_token | token_contains | partial_contains
+            filtered = filtered[mask].copy()
+            filtered["family_priority"] = 4
+            filtered.loc[partial_contains, "family_priority"] = 3
+            filtered.loc[token_contains, "family_priority"] = 2
+            filtered.loc[starts_with_token, "family_priority"] = 1
+            filtered.loc[exact_single, "family_priority"] = 0
+
+if family_query and "family_priority" in filtered.columns:
+    filtered = filtered.sort_values(
+        by=["family_priority", "character_count", "pinyin_key", "hanzi_simplified"],
+        ascending=[True, True, True, True],
+    )
+elif sort_mode == "Alphabetical (Pinyin A-Z)":
+    filtered = filtered.sort_values(by=["pinyin_key", "character_count", "hanzi_simplified"], ascending=[True, True, True])
+elif sort_mode == "Alphabetical (Hanzi)":
+    filtered = filtered.sort_values(by=["hanzi_simplified", "pinyin_key"], ascending=[True, True])
+elif sort_mode == "Frequency (common first)":
     filtered = filtered.sort_values(by=["frequency_rank", "character_count", "hanzi_simplified"], ascending=[True, True, True])
-elif sort_mode == "Hanzi":
-    filtered = filtered.sort_values(by=["hanzi_simplified", "frequency_rank"], ascending=[True, True])
-elif sort_mode == "Pinyin":
-    filtered = filtered.sort_values(by=["pinyin", "frequency_rank"], ascending=[True, True])
 else:
     filtered = filtered.sort_values(by=["proficiency_10", "frequency_rank"], ascending=[True, True])
 
@@ -143,7 +202,6 @@ with tab_vocab:
 
     display_cols = [
         "hanzi_simplified",
-        "hanzi_traditional",
         "pinyin",
         "english_meanings",
         "character_count",
@@ -155,8 +213,7 @@ with tab_vocab:
 
     shown = filtered[display_cols].head(max_rows).rename(
         columns={
-            "hanzi_simplified": "Hanzi (简)",
-            "hanzi_traditional": "Hanzi (繁)",
+            "hanzi_simplified": "Hanzi (Simplified)",
             "pinyin": "Pinyin",
             "english_meanings": "English",
             "character_count": "Chars",
@@ -166,7 +223,7 @@ with tab_vocab:
             "example_en": "Example (EN)",
         }
     )
-    st.dataframe(shown, use_container_width=True, hide_index=True)
+    st.dataframe(shown, width="stretch", hide_index=True)
 
     csv_bytes = filtered.to_csv(index=False).encode("utf-8-sig")
     st.download_button(
