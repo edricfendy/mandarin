@@ -254,6 +254,26 @@ def _polish_english_sentence(text: str) -> str:
     return cleaned
 
 
+def _force_sentence_level_english(text: str, hanzi: str = "") -> str:
+    sentence = _polish_english_sentence(text)
+    if not sentence:
+        return ""
+
+    # Remove word-level gloss right after quoted Hanzi, e.g. "特殊" (special) -> "特殊"
+    sentence = re.sub(r'"([^"]+)"\s*\([^)]+\)', r'"\1"', sentence)
+
+    # Avoid trailing mini-gloss fragments.
+    sentence = re.sub(r'\s+meaning\s+"[^"]+"\.?$', ".", sentence, flags=re.IGNORECASE)
+    sentence = re.sub(r"\s+", " ", sentence).strip()
+    if sentence and sentence[-1] not in ".!?":
+        sentence += "."
+
+    # If it still looks too short or fragment-like, use a full-sentence fallback.
+    if len(sentence.split()) < 5 and hanzi:
+        sentence = f'This sentence practices the expression "{hanzi}" in context.'
+    return sentence
+
+
 def _polish_chinese_sentence(text: str) -> str:
     cleaned = "".join(str(text).split()).strip()
     if not cleaned:
@@ -296,7 +316,7 @@ def _generate_professional_example_pair(hanzi: str, meaning_text: str, variant_s
     meaning = _primary_meaning(meaning_text)
     template = _PROFESSIONAL_EXAMPLE_TEMPLATES[variant_seed % len(_PROFESSIONAL_EXAMPLE_TEMPLATES)]
     zh = _polish_chinese_sentence(template[0].format(hanzi=safe_hanzi, meaning=meaning))
-    en = _polish_english_sentence(template[1].format(hanzi=safe_hanzi, meaning=meaning))
+    en = _force_sentence_level_english(template[1].format(hanzi=safe_hanzi, meaning=meaning), hanzi=safe_hanzi)
     return zh, en
 
 
@@ -310,7 +330,7 @@ def _get_professional_learning_example(row, variant_seed: int = 0):
     en_ok = not _is_low_quality_english_example(en)
 
     if zh_ok and en_ok:
-        return _polish_chinese_sentence(zh), _polish_english_sentence(en)
+        return _polish_chinese_sentence(zh), _force_sentence_level_english(en, hanzi=hanzi)
 
     return _generate_professional_example_pair(hanzi=hanzi, meaning_text=meaning, variant_seed=variant_seed)
 
