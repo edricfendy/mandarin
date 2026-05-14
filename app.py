@@ -1,6 +1,7 @@
 import re
 import unicodedata
 import json
+import html as html_lib
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
@@ -78,169 +79,523 @@ def fetch_stroke_svg_data(char: str):
     }
 
 
-def render_word_bank(words):
-    chips = " ".join(
-        [
-            f"<span style='display:inline-block;padding:6px 10px;margin:4px 6px 4px 0;border:1px solid #d1d5db;border-radius:8px;background:#f8fafc;font-weight:600;'>{w}</span>"
-            for w in words
-        ]
-    )
-    st.markdown("**Word Bank**")
-    st.markdown(chips, unsafe_allow_html=True)
-
-
-def _is_blank_correct(user_value, expected):
+def _normalize_expected_options(expected):
     if isinstance(expected, list):
-        return user_value in expected
-    return user_value == expected
+        return [str(item).strip() for item in expected if str(item).strip()]
+    text = str(expected).strip()
+    return [text] if text else []
 
 
-def _expected_to_text(expected):
-    if isinstance(expected, list):
-        return " / ".join(expected)
-    return expected
+def _build_drag_drop_payload(sentences, word_bank):
+    sentence_blocks = []
+    expected_slots = []
+
+    for sentence in sentences:
+        text = str(sentence.get("text", ""))
+        answers = sentence.get("answers", [])
+        if not isinstance(answers, list):
+            answers = [answers]
+
+        segments = text.split("___")
+        blank_count = max(len(segments) - 1, 0)
+        if blank_count < len(answers):
+            segments.extend([""] * (len(answers) - blank_count))
+            blank_count = len(answers)
+        elif blank_count > len(answers):
+            answers = answers + [""] * (blank_count - len(answers))
+
+        slot_indexes = []
+        for answer in answers:
+            expected_slots.append(_normalize_expected_options(answer))
+            slot_indexes.append(len(expected_slots) - 1)
+
+        sentence_blocks.append({"segments": segments, "slot_indexes": slot_indexes})
+
+    tokens = [{"id": f"token_{i}", "text": str(word)} for i, word in enumerate(word_bank)]
+    return {"sentences": sentence_blocks, "expected_slots": expected_slots, "tokens": tokens}
 
 
-def render_fill_blank_activity(activity_id, title, prompt, sentences, word_bank):
+def render_drag_drop_activity(activity_id, title, prompt, sentences, word_bank):
     st.markdown(f"#### {title}")
     st.caption(prompt)
-    render_word_bank(word_bank)
 
-    with st.form(f"{activity_id}_form"):
-        user_picks = []
-        expected_vals = []
-        blank_no = 1
+    payload = _build_drag_drop_payload(sentences=sentences, word_bank=word_bank)
+    if not payload["expected_slots"]:
+        st.warning("No blanks configured for this activity.")
+        return
 
-        for i, sentence in enumerate(sentences, start=1):
-            st.markdown(f"**{i}. {sentence['text']}**")
-            for expected in sentence["answers"]:
-                pick = st.selectbox(
-                    f"Blank {blank_no}",
-                    options=["(choose)"] + word_bank,
-                    key=f"{activity_id}_blank_{blank_no}",
-                )
-                user_picks.append(pick)
-                expected_vals.append(expected)
-                blank_no += 1
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    safe_id = re.sub(r"[^a-zA-Z0-9_]+", "_", activity_id)
 
-        submitted = st.form_submit_button("Check Fill-in Answers")
-
-    if submitted:
-        score = 0
-        total = len(expected_vals)
-        st.markdown("**Result**")
-        for idx, (picked, expected) in enumerate(zip(user_picks, expected_vals), start=1):
-            if _is_blank_correct(picked, expected):
-                score += 1
-                st.success(f"Blank {idx}: Correct")
-            else:
-                st.error(f"Blank {idx}: Try again")
-            st.caption(f"Your pick: {picked if picked != '(choose)' else '(empty)'}")
-            st.caption(f"Expected: {_expected_to_text(expected)}")
-        st.markdown(f"**Score: {score}/{total}**")
-        st.progress(score / total if total else 0)
-        if score == total and total > 0:
-            st.balloons()
-
-
-def render_stroke_canvas(char: str):
-    safe_char = json.dumps(char)
-    canvas_html = f"""
-    <div style="padding:8px 0 2px 0;">
-      <div style="font-weight:700;margin-bottom:8px;">Drawing Pad (write stroke by stroke)</div>
-      <canvas id="hanzi-canvas" width="520" height="520" style="border:2px solid #cbd5e1;border-radius:10px;touch-action:none;background:#ffffff;"></canvas>
-      <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-        <button id="clear-btn" style="padding:6px 12px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;cursor:pointer;">Clear</button>
-        <span style="font-size:13px;color:#374151;">Tip: follow the stroke numbers above, then draw each stroke in sequence.</span>
+    html = f"""
+    <div id="dd-wrap-{safe_id}" class="dd-wrap">
+      <div class="dd-toolbar">
+        <button id="check-btn-{safe_id}" type="button">Check Answers</button>
+        <button id="reset-btn-{safe_id}" type="button">Reset</button>
+        <span class="dd-tip">Drag words into each blank. Click a filled blank to return it to the word bank.</span>
       </div>
+      <div id="dd-sentences-{safe_id}" class="dd-sentences"></div>
+      <div class="dd-bank-label">Word Bank</div>
+      <div id="dd-bank-{safe_id}" class="dd-bank"></div>
+      <div id="dd-result-{safe_id}" class="dd-result"></div>
     </div>
+    <style>
+      .dd-wrap {{
+        border: 1px solid #dbe2ea;
+        border-radius: 12px;
+        padding: 12px 12px 10px 12px;
+        background: #f9fbfd;
+      }}
+      .dd-toolbar {{
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }}
+      .dd-toolbar button {{
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 5px 10px;
+        font-weight: 600;
+        cursor: pointer;
+      }}
+      .dd-tip {{
+        font-size: 12px;
+        color: #4b5563;
+      }}
+      .dd-sentences {{
+        margin-top: 12px;
+        display: grid;
+        gap: 8px;
+      }}
+      .dd-line {{
+        line-height: 1.9;
+        font-size: 18px;
+        color: #111827;
+      }}
+      .dd-line-no {{
+        font-weight: 700;
+        margin-right: 8px;
+      }}
+      .dd-slot {{
+        display: inline-flex;
+        min-width: 84px;
+        min-height: 34px;
+        padding: 2px 4px;
+        margin: 0 2px;
+        border: 2px dashed #94a3b8;
+        border-radius: 8px;
+        vertical-align: middle;
+        align-items: center;
+        justify-content: center;
+        background: #ffffff;
+      }}
+      .dd-slot.over {{
+        border-color: #0f766e;
+        background: #f0fdfa;
+      }}
+      .dd-slot.correct {{
+        border-color: #16a34a;
+        background: #f0fdf4;
+      }}
+      .dd-slot.wrong {{
+        border-color: #ef4444;
+        background: #fff1f2;
+      }}
+      .dd-bank-label {{
+        margin-top: 12px;
+        margin-bottom: 4px;
+        font-size: 14px;
+        font-weight: 700;
+      }}
+      .dd-bank {{
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        min-height: 44px;
+        padding: 8px;
+        border: 1px solid #dbe2ea;
+        border-radius: 10px;
+        background: #ffffff;
+      }}
+      .dd-token {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 6px 10px;
+        border: 1px solid #94a3b8;
+        border-radius: 8px;
+        background: #eff6ff;
+        font-weight: 700;
+        color: #0f172a;
+        cursor: grab;
+        user-select: none;
+        white-space: nowrap;
+      }}
+      .dd-token:active {{
+        cursor: grabbing;
+      }}
+      .dd-result {{
+        margin-top: 10px;
+        font-size: 14px;
+      }}
+      .dd-row-result {{
+        margin-top: 5px;
+      }}
+      .dd-row-result.good {{
+        color: #15803d;
+      }}
+      .dd-row-result.bad {{
+        color: #b91c1c;
+      }}
+      @media (max-width: 680px) {{
+        .dd-line {{
+          font-size: 16px;
+          line-height: 2.0;
+        }}
+        .dd-slot {{
+          min-width: 72px;
+          min-height: 32px;
+        }}
+      }}
+    </style>
     <script>
-      const canvas = document.getElementById("hanzi-canvas");
-      const ctx = canvas.getContext("2d");
-      const charToPractice = {safe_char};
+      (() => {{
+        const payload = {payload_json};
+        const wrap = document.getElementById("dd-wrap-{safe_id}");
+        const sentencesEl = document.getElementById("dd-sentences-{safe_id}");
+        const bankEl = document.getElementById("dd-bank-{safe_id}");
+        const resultEl = document.getElementById("dd-result-{safe_id}");
+        const checkBtn = document.getElementById("check-btn-{safe_id}");
+        const resetBtn = document.getElementById("reset-btn-{safe_id}");
 
-      function drawGuide() {{
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const tokenMap = new Map(payload.tokens.map((t) => [t.id, t]));
+        const tokenOrder = new Map(payload.tokens.map((t, idx) => [t.id, idx]));
+        let bankTokenIds = payload.tokens.map((t) => t.id);
+        let slots = Array(payload.expected_slots.length).fill(null);
+        let graded = Array(payload.expected_slots.length).fill(null);
 
-        ctx.strokeStyle = "#e5e7eb";
-        ctx.lineWidth = 1;
-
-        const w = canvas.width;
-        const h = canvas.height;
-        const midX = w / 2;
-        const midY = h / 2;
-
-        ctx.beginPath();
-        ctx.moveTo(midX, 0); ctx.lineTo(midX, h);
-        ctx.moveTo(0, midY); ctx.lineTo(w, midY);
-        ctx.moveTo(0, 0); ctx.lineTo(w, h);
-        ctx.moveTo(w, 0); ctx.lineTo(0, h);
-        ctx.stroke();
-
-        ctx.fillStyle = "rgba(148, 163, 184, 0.22)";
-        ctx.font = "260px 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(charToPractice, midX, midY + 8);
-      }}
-
-      drawGuide();
-
-      let drawing = false;
-
-      function getPos(evt) {{
-        const rect = canvas.getBoundingClientRect();
-        const clientX = evt.touches ? evt.touches[0].clientX : evt.clientX;
-        const clientY = evt.touches ? evt.touches[0].clientY : evt.clientY;
-        return {{
-          x: clientX - rect.left,
-          y: clientY - rect.top
+        const keepBankOrder = () => {{
+          bankTokenIds.sort((a, b) => tokenOrder.get(a) - tokenOrder.get(b));
         }};
-      }}
 
-      function startDraw(evt) {{
-        evt.preventDefault();
-        drawing = true;
-        const p = getPos(evt);
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y);
-      }}
+        const removeTokenFromCurrentLocation = (tokenId) => {{
+          const iBank = bankTokenIds.indexOf(tokenId);
+          if (iBank >= 0) {{
+            bankTokenIds.splice(iBank, 1);
+            return;
+          }}
+          const iSlot = slots.indexOf(tokenId);
+          if (iSlot >= 0) {{
+            slots[iSlot] = null;
+          }}
+        }};
 
-      function draw(evt) {{
-        if (!drawing) return;
-        evt.preventDefault();
-        const p = getPos(evt);
-        ctx.strokeStyle = "#111827";
-        ctx.lineWidth = 8;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-        ctx.lineTo(p.x, p.y);
-        ctx.stroke();
-      }}
+        const sendToBank = (tokenId) => {{
+          if (!tokenId) return;
+          removeTokenFromCurrentLocation(tokenId);
+          bankTokenIds.push(tokenId);
+          keepBankOrder();
+        }};
 
-      function stopDraw(evt) {{
-        if (!drawing) return;
-        evt.preventDefault();
-        drawing = false;
-        ctx.closePath();
-      }}
+        const placeInSlot = (slotIndex, tokenId) => {{
+          if (!tokenMap.has(tokenId)) return;
+          removeTokenFromCurrentLocation(tokenId);
+          const replaced = slots[slotIndex];
+          if (replaced) {{
+            bankTokenIds.push(replaced);
+          }}
+          slots[slotIndex] = tokenId;
+          graded = Array(payload.expected_slots.length).fill(null);
+          keepBankOrder();
+          render();
+        }};
 
-      canvas.addEventListener("mousedown", startDraw);
-      canvas.addEventListener("mousemove", draw);
-      canvas.addEventListener("mouseup", stopDraw);
-      canvas.addEventListener("mouseleave", stopDraw);
+        const clearSlot = (slotIndex) => {{
+          const existing = slots[slotIndex];
+          if (!existing) return;
+          slots[slotIndex] = null;
+          bankTokenIds.push(existing);
+          graded = Array(payload.expected_slots.length).fill(null);
+          keepBankOrder();
+          render();
+        }};
 
-      canvas.addEventListener("touchstart", startDraw, {{ passive: false }});
-      canvas.addEventListener("touchmove", draw, {{ passive: false }});
-      canvas.addEventListener("touchend", stopDraw, {{ passive: false }});
+        const makeTokenEl = (token, slotIndex = null) => {{
+          const tokenEl = document.createElement("div");
+          tokenEl.className = "dd-token";
+          tokenEl.textContent = token.text;
+          tokenEl.draggable = true;
+          tokenEl.dataset.tokenId = token.id;
+          tokenEl.addEventListener("dragstart", (evt) => {{
+            evt.dataTransfer.setData("text/plain", token.id);
+          }});
+          if (slotIndex !== null) {{
+            tokenEl.title = "Click to return to word bank";
+            tokenEl.addEventListener("click", () => clearSlot(slotIndex));
+          }}
+          return tokenEl;
+        }};
 
-      document.getElementById("clear-btn").addEventListener("click", (e) => {{
-        e.preventDefault();
-        drawGuide();
-      }});
+        const render = () => {{
+          sentencesEl.innerHTML = "";
+          bankEl.innerHTML = "";
+
+          payload.sentences.forEach((sentence, rowIdx) => {{
+            const line = document.createElement("div");
+            line.className = "dd-line";
+
+            const no = document.createElement("span");
+            no.className = "dd-line-no";
+            no.textContent = String(rowIdx + 1) + ".";
+            line.appendChild(no);
+
+            for (let i = 0; i < sentence.segments.length; i++) {{
+              const textSpan = document.createElement("span");
+              textSpan.textContent = sentence.segments[i];
+              line.appendChild(textSpan);
+
+              if (i < sentence.slot_indexes.length) {{
+                const slotIndex = sentence.slot_indexes[i];
+                const slotEl = document.createElement("span");
+                slotEl.className = "dd-slot";
+                slotEl.dataset.slotIndex = String(slotIndex);
+                if (graded[slotIndex] === true) {{
+                  slotEl.classList.add("correct");
+                }} else if (graded[slotIndex] === false) {{
+                  slotEl.classList.add("wrong");
+                }}
+
+                slotEl.addEventListener("dragover", (evt) => {{
+                  evt.preventDefault();
+                  slotEl.classList.add("over");
+                }});
+                slotEl.addEventListener("dragleave", () => {{
+                  slotEl.classList.remove("over");
+                }});
+                slotEl.addEventListener("drop", (evt) => {{
+                  evt.preventDefault();
+                  slotEl.classList.remove("over");
+                  const tokenId = evt.dataTransfer.getData("text/plain");
+                  placeInSlot(slotIndex, tokenId);
+                }});
+
+                const tokenId = slots[slotIndex];
+                if (tokenId && tokenMap.has(tokenId)) {{
+                  slotEl.appendChild(makeTokenEl(tokenMap.get(tokenId), slotIndex));
+                }}
+                line.appendChild(slotEl);
+              }}
+            }}
+
+            sentencesEl.appendChild(line);
+          }});
+
+          keepBankOrder();
+          bankTokenIds.forEach((tokenId) => {{
+            const token = tokenMap.get(tokenId);
+            if (token) {{
+              bankEl.appendChild(makeTokenEl(token, null));
+            }}
+          }});
+        }};
+
+        const checkAnswers = () => {{
+          let score = 0;
+          const details = [];
+
+          for (let i = 0; i < slots.length; i++) {{
+            const tokenId = slots[i];
+            const given = tokenId ? String(tokenMap.get(tokenId).text).trim() : "";
+            const expected = payload.expected_slots[i] || [];
+            const ok = expected.includes(given);
+            graded[i] = ok;
+            if (ok) {{
+              score += 1;
+            }}
+            details.push({{
+              slot: i + 1,
+              ok,
+              given: given || "(empty)",
+              expected: expected.length ? expected.join(" / ") : "(none)"
+            }});
+          }}
+
+          render();
+
+          const total = slots.length;
+          const pct = total > 0 ? Math.round((score / total) * 100) : 0;
+          const summary = document.createElement("div");
+          summary.innerHTML = "<strong>Score: " + score + "/" + total + " (" + pct + "%)</strong>";
+
+          const rows = document.createElement("div");
+          details.forEach((d) => {{
+            const row = document.createElement("div");
+            row.className = "dd-row-result " + (d.ok ? "good" : "bad");
+            row.textContent = "Blank " + d.slot + ": " + (d.ok ? "Correct" : ("Try again | Your answer: " + d.given + " | Expected: " + d.expected));
+            rows.appendChild(row);
+          }});
+
+          resultEl.innerHTML = "";
+          resultEl.appendChild(summary);
+          resultEl.appendChild(rows);
+        }};
+
+        checkBtn.addEventListener("click", checkAnswers);
+        resetBtn.addEventListener("click", () => {{
+          bankTokenIds = payload.tokens.map((t) => t.id);
+          slots = Array(payload.expected_slots.length).fill(null);
+          graded = Array(payload.expected_slots.length).fill(null);
+          resultEl.innerHTML = "";
+          render();
+        }});
+
+        render();
+      }})();
     </script>
     """
-    components.html(canvas_html, height=620, scrolling=False)
+
+    components.html(html, height=720, scrolling=False)
+
+
+def render_stroke_checker(char: str):
+    safe_char = json.dumps(char, ensure_ascii=False)
+    html = f"""
+    <div class="stroke-wrap">
+      <div class="stroke-head">Stroke Check Practice</div>
+      <div class="stroke-tip">Write the character in the correct stroke order and direction. The checker marks each stroke when it is correct.</div>
+      <div id="stroke-board"></div>
+      <div class="stroke-controls">
+        <button id="start-quiz" type="button">Start Checking</button>
+        <button id="restart-quiz" type="button">Restart</button>
+        <button id="show-outline" type="button">Show Outline</button>
+        <button id="hide-outline" type="button">Hide Outline</button>
+      </div>
+      <div id="stroke-status" class="stroke-status"></div>
+    </div>
+    <style>
+      .stroke-wrap {{
+        border: 1px solid #dbe2ea;
+        border-radius: 12px;
+        background: #f9fbfd;
+        padding: 12px;
+      }}
+      .stroke-head {{
+        font-size: 16px;
+        font-weight: 700;
+      }}
+      .stroke-tip {{
+        margin-top: 4px;
+        margin-bottom: 10px;
+        font-size: 13px;
+        color: #4b5563;
+      }}
+      #stroke-board {{
+        width: 100%;
+        min-height: 360px;
+        border: 2px solid #cbd5e1;
+        border-radius: 10px;
+        background: #ffffff;
+      }}
+      .stroke-controls {{
+        margin-top: 10px;
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }}
+      .stroke-controls button {{
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        background: #ffffff;
+        padding: 6px 10px;
+        font-weight: 600;
+        cursor: pointer;
+      }}
+      .stroke-status {{
+        margin-top: 10px;
+        font-size: 14px;
+        color: #0f172a;
+      }}
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/hanzi-writer@3.7/dist/hanzi-writer.min.js"></script>
+    <script>
+      (() => {{
+        const character = {safe_char};
+        const boardId = "stroke-board";
+        const statusEl = document.getElementById("stroke-status");
+        const startBtn = document.getElementById("start-quiz");
+        const restartBtn = document.getElementById("restart-quiz");
+        const showOutlineBtn = document.getElementById("show-outline");
+        const hideOutlineBtn = document.getElementById("hide-outline");
+        const boardSize = Math.max(260, Math.min(420, Math.floor(window.innerWidth - 36)));
+
+        let totalStrokes = null;
+        let doneStrokes = 0;
+        let mistakes = 0;
+        let writer = null;
+
+        const renderStatus = (extra = "") => {{
+          const total = totalStrokes ?? "?";
+          const base = "Progress: " + doneStrokes + "/" + total + " strokes | Mistakes: " + mistakes;
+          statusEl.textContent = extra ? (base + " | " + extra) : base;
+        }};
+
+        const startQuiz = () => {{
+          doneStrokes = 0;
+          mistakes = 0;
+          renderStatus("Checking started");
+          writer.quiz({{
+            showHintAfterMisses: 2,
+            highlightOnComplete: true,
+            onCorrectStroke: (data) => {{
+              doneStrokes = data.strokeNum + 1;
+              mistakes = data.totalMistakes;
+              renderStatus("Stroke " + (data.strokeNum + 1) + " correct");
+            }},
+            onMistake: (data) => {{
+              doneStrokes = data.strokeNum;
+              mistakes = data.totalMistakes;
+              renderStatus("Mistake on stroke " + (data.strokeNum + 1));
+            }},
+            onComplete: (summary) => {{
+              doneStrokes = totalStrokes ?? doneStrokes;
+              mistakes = summary.totalMistakes;
+              renderStatus("Completed");
+            }}
+          }});
+        }};
+
+        writer = HanziWriter.create(boardId, character, {{
+          width: boardSize,
+          height: boardSize,
+          padding: 16,
+          showCharacter: false,
+          showOutline: true,
+          strokeColor: "#111827",
+          outlineColor: "#cbd5e1",
+          drawingColor: "#0f766e",
+          radicalColor: "#2563eb",
+          onLoadCharDataSuccess: (charData) => {{
+            totalStrokes = charData.strokes.length;
+            doneStrokes = 0;
+            mistakes = 0;
+            renderStatus("Ready");
+            startQuiz();
+          }},
+          onLoadCharDataError: () => {{
+            statusEl.textContent = "Unable to load stroke checking data for this character.";
+          }}
+        }});
+
+        startBtn.addEventListener("click", startQuiz);
+        restartBtn.addEventListener("click", startQuiz);
+        showOutlineBtn.addEventListener("click", () => writer.showOutline({{ duration: 120 }}));
+        hideOutlineBtn.addEventListener("click", () => writer.hideOutline({{ duration: 120 }}));
+      }})();
+    </script>
+    """
+    components.html(html, height=620, scrolling=False)
 
 
 def parse_official_hsk_level(levels_text: str):
@@ -419,8 +774,8 @@ elif sort_mode == "Frequency (common first)":
 else:
     filtered = filtered.sort_values(by=["proficiency_10", "frequency_rank"], ascending=[True, True])
 
-tab_vocab, tab_stroke, tab_convo, tab_quiz = st.tabs(
-    ["Vocabulary Explorer", "Stroke Order Practice", "Daily Conversation", "Quick Quiz"]
+tab_vocab, tab_stroke, tab_convo, tab_quiz, tab_cue = st.tabs(
+    ["Vocabulary Explorer", "Stroke Order Practice", "Daily Conversation", "Quick Quiz", "Cue Cards"]
 )
 
 with tab_vocab:
@@ -429,6 +784,7 @@ with tab_vocab:
     col2.metric("1-char", f"{(filtered['character_count'] == 1).sum():,}")
     col3.metric("2-char", f"{(filtered['character_count'] == 2).sum():,}")
     col4.metric("3+ char", f"{(filtered['character_count'] >= 3).sum():,}")
+    st.caption(f"Vocabulary dataset loaded: {len(vocab):,} total words (no 500-word cap).")
 
     st.markdown("### Single -> Two -> Three+ Flow")
     st.write(
@@ -474,8 +830,8 @@ with tab_vocab:
     )
 
 with tab_stroke:
-    st.markdown("### Stroke Order Writing Exercise (with Number Sequence)")
-    st.caption("Pick one Hanzi, follow the stroke numbers, and tick each stroke as you practice writing.")
+    st.markdown("### Stroke Order Writing Exercise (with Live Checking)")
+    st.caption("Pick one Hanzi, then write it directly. The checker validates each stroke as you draw.")
 
     single_hanzi_df = (
         filtered[filtered["character_count"] == 1][["hanzi_simplified", "pinyin", "english_meanings", "pinyin_key"]]
@@ -513,14 +869,8 @@ with tab_stroke:
         with preview_col:
             st.image(stroke_data["svg_text"], width=420)
         with draw_col:
-            render_stroke_canvas(target_char)
+            render_stroke_checker(target_char)
         st.link_button("Open stroke source (SVG)", stroke_data["source_url"])
-
-        st.markdown("#### Practice Checklist")
-        checklist_cols = st.columns(4)
-        for i, n in enumerate(stroke_data["sequence"]):
-            with checklist_cols[i % 4]:
-                st.checkbox(f"Stroke {n}", key=f"stroke_{target_char}_{n}")
 
         related = filtered[filtered["hanzi_simplified"].astype(str).str.contains(re.escape(target_char), regex=True, na=False)].copy()
         related = related.sort_values(by=["character_count", "pinyin_key", "hanzi_simplified"])
@@ -558,7 +908,7 @@ with tab_stroke:
 
 with tab_convo:
     st.markdown("### Daily Conversation")
-    convo_ref_tab, convo_fill_tab = st.tabs(["Reference (Hanzi + Pinyin + English)", "Fill in the Blank"])
+    convo_ref_tab, convo_fill_tab = st.tabs(["Reference (Hanzi + Pinyin + English)", "Drag & Drop Practice"])
 
     with convo_ref_tab:
         conversations = [
@@ -599,10 +949,10 @@ with tab_convo:
                 st.markdown(f"| {role} | {hanzi} | {pinyin} | {english} |")
 
     with convo_fill_tab:
-        render_fill_blank_activity(
+        render_drag_drop_activity(
             activity_id="daily_work_fill",
             title="Work Dialogue Practice",
-            prompt="Fill the blanks from the word bank to rebuild the conversation.",
+            prompt="Drag each word into the correct blank to rebuild the conversation.",
             word_bank=["有空", "怎么了", "问", "怎么样", "可能", "差不多了", "一起", "当然"],
             sentences=[
                 {"text": "你现在 ___ 吗？", "answers": ["有空"]},
@@ -612,10 +962,10 @@ with tab_convo:
             ],
         )
         st.divider()
-        render_fill_blank_activity(
+        render_drag_drop_activity(
             activity_id="daily_commute_fill",
             title="Commute Dialogue Practice",
-            prompt="Complete each line with the best phrase.",
+            prompt="Drag and drop each phrase into the best spot.",
             word_bank=["怎么", "地铁", "有时候", "公共汽车", "一起", "可以", "地铁站", "八点", "公司"],
             sentences=[
                 {"text": "你 ___ 去公司？", "answers": ["怎么"]},
@@ -625,10 +975,10 @@ with tab_convo:
             ],
         )
         st.divider()
-        render_fill_blank_activity(
+        render_drag_drop_activity(
             activity_id="daily_food_fill",
             title="Food + Social Dialogue Practice",
-            prompt="Use the word bank to complete the lines naturally.",
+            prompt="Drag the word bank items into each blank naturally.",
             word_bank=["吃饭", "还没有", "来不及", "早饭", "先", "餐厅", "不客气", "请"],
             sentences=[
                 {"text": "你 ___ 了吗？", "answers": ["吃饭"]},
@@ -639,10 +989,10 @@ with tab_convo:
         )
 
 with tab_quiz:
-    st.markdown("### Quick Quiz: Fill in the Blank Challenge")
-    st.caption("Style: sentence blanks + word bank, like worksheet practice.")
+    st.markdown("### Quick Quiz: Drag and Drop Challenge")
+    st.caption("Style: drag the word bank into each blank and check your score.")
 
-    render_fill_blank_activity(
+    render_drag_drop_activity(
         activity_id="quiz_fill_core",
         title="Quiz Set A",
         prompt="Complete all blanks. Focus on high-frequency daily Mandarin patterns.",
@@ -659,7 +1009,7 @@ with tab_quiz:
 
     st.divider()
 
-    render_fill_blank_activity(
+    render_drag_drop_activity(
         activity_id="quiz_fill_plus",
         title="Quiz Set B (Context + Meaning)",
         prompt="Mixed blanks from transport, scheduling, and social phrases.",
@@ -672,6 +1022,84 @@ with tab_quiz:
             {"text": "那我们 ___ 去 ___ 吧。", "answers": ["先", "餐厅"]},
         ],
     )
+
+with tab_cue:
+    st.markdown("### Cue Cards")
+    st.caption("Front: Hanzi + pinyin + meaning. Back: usage sentence + English translation.")
+
+    cue_cols = ["hanzi_simplified", "pinyin", "english_meanings", "example_zh", "example_en"]
+    cue_df = filtered[cue_cols].copy()
+    cue_df = cue_df.dropna(subset=["hanzi_simplified"])
+    cue_df = cue_df.drop_duplicates(subset=["hanzi_simplified", "pinyin", "english_meanings"])
+    cue_df = cue_df.reset_index(drop=True)
+
+    if cue_df.empty:
+        st.warning("No cue cards available for the current filters.")
+    else:
+        if "cue_card_index" not in st.session_state:
+            st.session_state["cue_card_index"] = 0
+        if "cue_card_show_back" not in st.session_state:
+            st.session_state["cue_card_show_back"] = False
+
+        total_cards = len(cue_df)
+        st.session_state["cue_card_index"] = st.session_state["cue_card_index"] % total_cards
+
+        b1, b2, b3, b4 = st.columns([1, 1, 1, 2])
+        with b1:
+            if st.button("Previous", key="cue_prev"):
+                st.session_state["cue_card_index"] = (st.session_state["cue_card_index"] - 1) % total_cards
+                st.session_state["cue_card_show_back"] = False
+        with b2:
+            if st.button("Next", key="cue_next"):
+                st.session_state["cue_card_index"] = (st.session_state["cue_card_index"] + 1) % total_cards
+                st.session_state["cue_card_show_back"] = False
+        with b3:
+            if st.button("Random", key="cue_random"):
+                st.session_state["cue_card_index"] = int(cue_df.sample(1).index[0])
+                st.session_state["cue_card_show_back"] = False
+        with b4:
+            if st.button("Flip Front/Back", key="cue_flip"):
+                st.session_state["cue_card_show_back"] = not st.session_state["cue_card_show_back"]
+
+        idx = st.session_state["cue_card_index"]
+        row = cue_df.iloc[idx]
+
+        hanzi = "" if pd.isna(row["hanzi_simplified"]) else str(row["hanzi_simplified"]).strip()
+        pinyin = "" if pd.isna(row["pinyin"]) else str(row["pinyin"]).strip()
+        meaning = "" if pd.isna(row["english_meanings"]) else str(row["english_meanings"]).strip()
+        ex_zh = "" if pd.isna(row["example_zh"]) else str(row["example_zh"]).strip()
+        ex_en = "" if pd.isna(row["example_en"]) else str(row["example_en"]).strip()
+        hanzi_html = html_lib.escape(hanzi) if hanzi else "—"
+        pinyin_html = html_lib.escape(pinyin) if pinyin else "—"
+        meaning_html = html_lib.escape(meaning) if meaning else "—"
+        ex_zh_html = html_lib.escape(ex_zh) if ex_zh else "No sentence available."
+        ex_en_html = html_lib.escape(ex_en) if ex_en else "No English translation available."
+
+        st.caption(f"Card {idx + 1}/{total_cards}")
+
+        if not st.session_state["cue_card_show_back"]:
+            st.markdown(
+                f"""
+                <div style="border:1px solid #dbe2ea;border-radius:14px;padding:22px;background:#f9fbfd;min-height:260px;">
+                  <div style="font-size:54px;line-height:1.1;font-weight:700;margin-bottom:10px;">{hanzi_html}</div>
+                  <div style="font-size:22px;font-weight:600;color:#1f2937;margin-bottom:10px;">{pinyin_html}</div>
+                  <div style="font-size:18px;color:#0f172a;">{meaning_html}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f"""
+                <div style="border:1px solid #dbe2ea;border-radius:14px;padding:22px;background:#f8fafc;min-height:260px;">
+                  <div style="font-size:15px;font-weight:700;color:#334155;margin-bottom:6px;">How to use it in a sentence</div>
+                  <div style="font-size:26px;line-height:1.4;margin-bottom:12px;">{ex_zh_html}</div>
+                  <div style="font-size:15px;font-weight:700;color:#334155;margin-bottom:6px;">English translation</div>
+                  <div style="font-size:18px;line-height:1.5;">{ex_en_html}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
 st.info(
     "Tip: Keep official HSK filter broad, then use Level 1-10 to progressively increase difficulty from high-frequency daily words to advanced low-frequency words."
