@@ -1,6 +1,7 @@
 import re
 import unicodedata
 import json
+import random
 from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -195,23 +196,23 @@ _NO_PINYIN_CLOZE_PROMPTS = (
 _PROFESSIONAL_EXAMPLE_TEMPLATES = (
     (
         "在今天的讨论里，我们重点练习了“{hanzi}”这个表达。",
-        "In today's discussion, we focused on practicing the expression \"{hanzi}.\"",
+        "In today's discussion, we focused on practicing this expression in context.",
     ),
     (
         "老师提醒我们，使用“{hanzi}”时要注意具体语境。",
-        "Our teacher reminded us to pay attention to context when using \"{hanzi}.\"",
+        "Our teacher reminded us to pay attention to context when using this expression.",
     ),
     (
         "这段对话里，“{hanzi}”是关键表达。",
-        "In this dialogue, \"{hanzi}\" is the key expression.",
+        "In this dialogue, this expression is the key point.",
     ),
     (
         "为了让句子更自然，我把“{hanzi}”放在了核心位置。",
-        "To make the sentence sound more natural, I placed \"{hanzi}\" in a key part of the sentence.",
+        "To make the sentence sound more natural, I placed this expression in a key part of the sentence.",
     ),
     (
         "在口语练习中，我们先理解“{hanzi}”，再完成整句表达。",
-        "In speaking practice, we first understand \"{hanzi}\" and then complete the full sentence.",
+        "In speaking practice, we first understand this expression and then complete the full sentence.",
     ),
 )
 
@@ -254,13 +255,31 @@ def _polish_english_sentence(text: str) -> str:
     return cleaned
 
 
-def _force_sentence_level_english(text: str, hanzi: str = "") -> str:
+def _force_sentence_level_english(text: str, hanzi: str = "", meaning: str = "") -> str:
     sentence = _polish_english_sentence(text)
     if not sentence:
         return ""
 
-    # Remove word-level gloss right after quoted Hanzi, e.g. "特殊" (special) -> "特殊"
-    sentence = re.sub(r'"([^"]+)"\s*\([^)]+\)', r'"\1"', sentence)
+    meaning_token = _primary_meaning(meaning) if meaning else "this expression"
+    if not meaning_token:
+        meaning_token = "this expression"
+
+    # Normalize gloss-style quoted Hanzi + gloss into English phrase.
+    sentence = re.sub(
+        r'"([^"]*[\u4e00-\u9fff]+[^"]*)"\s*\(([^)]+)\)',
+        lambda m: f'"{m.group(2).strip()}"',
+        sentence,
+    )
+
+    # Replace remaining quoted Hanzi segments with an English meaning token.
+    sentence = re.sub(
+        r'"[^"]*[\u4e00-\u9fff][^"]*"',
+        f'"{meaning_token}"',
+        sentence,
+    )
+
+    # Remove any remaining standalone Hanzi chars from English context.
+    sentence = re.sub(r"[\u4e00-\u9fff]+", meaning_token, sentence)
 
     # Avoid trailing mini-gloss fragments.
     sentence = re.sub(r'\s+meaning\s+"[^"]+"\.?$', ".", sentence, flags=re.IGNORECASE)
@@ -269,8 +288,8 @@ def _force_sentence_level_english(text: str, hanzi: str = "") -> str:
         sentence += "."
 
     # If it still looks too short or fragment-like, use a full-sentence fallback.
-    if len(sentence.split()) < 5 and hanzi:
-        sentence = f'This sentence practices the expression "{hanzi}" in context.'
+    if len(sentence.split()) < 5:
+        sentence = f'This sentence practices the expression "{meaning_token}" in context.'
     return sentence
 
 
@@ -316,7 +335,11 @@ def _generate_professional_example_pair(hanzi: str, meaning_text: str, variant_s
     meaning = _primary_meaning(meaning_text)
     template = _PROFESSIONAL_EXAMPLE_TEMPLATES[variant_seed % len(_PROFESSIONAL_EXAMPLE_TEMPLATES)]
     zh = _polish_chinese_sentence(template[0].format(hanzi=safe_hanzi, meaning=meaning))
-    en = _force_sentence_level_english(template[1].format(hanzi=safe_hanzi, meaning=meaning), hanzi=safe_hanzi)
+    en = _force_sentence_level_english(
+        template[1].format(hanzi=safe_hanzi, meaning=meaning),
+        hanzi=safe_hanzi,
+        meaning=meaning,
+    )
     return zh, en
 
 
@@ -330,9 +353,54 @@ def _get_professional_learning_example(row, variant_seed: int = 0):
     en_ok = not _is_low_quality_english_example(en)
 
     if zh_ok and en_ok:
-        return _polish_chinese_sentence(zh), _force_sentence_level_english(en, hanzi=hanzi)
+        return _polish_chinese_sentence(zh), _force_sentence_level_english(en, hanzi=hanzi, meaning=meaning)
 
     return _generate_professional_example_pair(hanzi=hanzi, meaning_text=meaning, variant_seed=variant_seed)
+
+
+def _build_vocab_explorer_example_pair(row, variant_seed: int = 0):
+    hanzi = "" if pd.isna(row.get("hanzi_simplified", "")) else str(row.get("hanzi_simplified", "")).strip()
+    meaning = "" if pd.isna(row.get("english_meanings", "")) else str(row.get("english_meanings", "")).strip()
+    raw_zh = "" if pd.isna(row.get("example_zh", "")) else str(row.get("example_zh", "")).strip()
+    raw_en = "" if pd.isna(row.get("example_en", "")) else str(row.get("example_en", "")).strip()
+
+    candidates = []
+    if (not _is_low_quality_chinese_example(raw_zh, hanzi=hanzi)) and (not _is_low_quality_english_example(raw_en)):
+        candidates.append(
+            (
+                _polish_chinese_sentence(raw_zh),
+                _force_sentence_level_english(raw_en, hanzi=hanzi, meaning=meaning),
+            )
+        )
+
+    for shift in range(len(_PROFESSIONAL_EXAMPLE_TEMPLATES)):
+        candidates.append(
+            _generate_professional_example_pair(
+                hanzi=hanzi,
+                meaning_text=meaning,
+                variant_seed=variant_seed + shift,
+            )
+        )
+
+    if not candidates:
+        return "", ""
+    pick_idx = abs(int(variant_seed)) % len(candidates)
+    return candidates[pick_idx]
+
+
+def _apply_randomized_vocab_examples(df: pd.DataFrame, base_seed: int) -> pd.DataFrame:
+    if df.empty:
+        return df
+    work = df.copy()
+    zh_examples = []
+    en_examples = []
+    for pos, (_, row) in enumerate(work.iterrows()):
+        ex_zh, ex_en = _build_vocab_explorer_example_pair(row, variant_seed=base_seed + pos * 13)
+        zh_examples.append(ex_zh)
+        en_examples.append(ex_en)
+    work["example_zh"] = zh_examples
+    work["example_en"] = en_examples
+    return work
 
 
 def _prioritize_varied_examples(df: pd.DataFrame) -> pd.DataFrame:
@@ -483,7 +551,7 @@ def _is_hanzi_char(ch: str) -> bool:
     return bool(re.match(r"[\u4e00-\u9fff]", ch or ""))
 
 
-def _segment_hanzi_run_for_click_selection(run_text: str, expression_lookup: dict, max_char_len: int = 4, min_click_len: int = 2):
+def _segment_hanzi_run_for_click_selection(run_text: str, expression_lookup: dict, max_char_len: int = 8, min_click_len: int = 1):
     run = "" if not isinstance(run_text, str) else run_text
     if not run:
         return []
@@ -508,7 +576,7 @@ def _segment_hanzi_run_for_click_selection(run_text: str, expression_lookup: dic
                 continue
 
             freq = float(info.get("frequency_rank", 999999))
-            length_bonus = size * 3.0
+            length_bonus = 0.9 if size == 1 else size * 3.0
             two_char_bonus = 1.2 if size == 2 else 0.0
             freq_bonus = max(0.0, 2.0 - min(freq, 30000.0) / 15000.0)
             score = length_bonus + two_char_bonus + freq_bonus + best_score[i + size]
@@ -526,7 +594,7 @@ def _segment_hanzi_run_for_click_selection(run_text: str, expression_lookup: dic
     return segments
 
 
-def _build_sentence_click_tokens(line_text: str, expression_lookup: dict, max_char_len: int = 4):
+def _build_sentence_click_tokens(line_text: str, expression_lookup: dict, max_char_len: int = 8):
     text = "" if not isinstance(line_text, str) else line_text
     if not text:
         return []
@@ -548,7 +616,7 @@ def _build_sentence_click_tokens(line_text: str, expression_lookup: dict, max_ch
             run_text=run,
             expression_lookup=expression_lookup,
             max_char_len=max_char_len,
-            min_click_len=2,
+            min_click_len=1,
         )
         for segment in run_segments:
             seg_text = str(segment.get("text", ""))
@@ -2133,6 +2201,9 @@ tab_vocab, tab_stroke, tab_convo, tab_quiz, tab_cue = st.tabs(
 )
 
 with tab_vocab:
+    if "vocab_example_seed" not in st.session_state:
+        st.session_state["vocab_example_seed"] = random.randint(1, 10_000_000)
+
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Filtered Words", f"{len(filtered):,}")
     col2.metric("1-char", f"{(filtered['character_count'] == 1).sum():,}")
@@ -2144,6 +2215,8 @@ with tab_vocab:
     st.write(
         "Start with single Hanzi meaning, then jump to 2-character combinations, then 3+ chunks for natural daily fluency."
     )
+    if st.button("Randomize Example Sentences", key="vocab_shuffle_examples"):
+        st.session_state["vocab_example_seed"] = random.randint(1, 10_000_000)
 
     display_cols = [
         "hanzi_simplified",
@@ -2160,6 +2233,7 @@ with tab_vocab:
         shown_base = filtered[display_cols]
     else:
         shown_base = filtered[display_cols].head(int(max_rows))
+    shown_base = _apply_randomized_vocab_examples(shown_base, base_seed=int(st.session_state["vocab_example_seed"]))
 
     shown = shown_base.rename(
         columns={
