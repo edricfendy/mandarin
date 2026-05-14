@@ -20,6 +20,20 @@ def normalize_pinyin(text: str) -> str:
     return clean
 
 
+def normalize_zh_answer(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    cleaned = re.sub(r"[\s，。！？、,.!?;:：；\"'“”‘’()（）\[\]{}]", "", text)
+    return cleaned.strip()
+
+
+def normalize_en_answer(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    cleaned = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    return re.sub(r"\s+", " ", cleaned)
+
+
 def parse_official_hsk_level(levels_text: str):
     if not isinstance(levels_text, str) or not levels_text.strip():
         return None
@@ -234,78 +248,159 @@ with tab_vocab:
     )
 
 with tab_convo:
-    st.markdown("### 1) Work Conversation")
-    st.markdown(
-        """
-A: 你现在有空吗？  
-B: 有，怎么了？  
-A: 我想问一下这个计划怎么样。  
-B: 可能要改一点，不过差不多了。  
+    st.markdown("### Daily Conversation (Hanzi + Pinyin + English)")
+    conversations = [
+        {
+            "title": "1) Work Conversation",
+            "lines": [
+                ("A", "你现在有空吗？", "Nǐ xiànzài yǒu kòng ma?", "Are you free now?"),
+                ("B", "有，怎么了？", "Yǒu, zěnme le?", "Yes, what's up?"),
+                ("A", "我想问一下这个计划怎么样。", "Wǒ xiǎng wèn yíxià zhège jìhuà zěnmeyàng.", "I want to ask how this plan is."),
+                ("B", "可能要改一点，不过差不多了。", "Kěnéng yào gǎi yìdiǎn, búguò chàbuduō le.", "It may need small changes, but it's almost done."),
+            ],
+        },
+        {
+            "title": "2) Commute Conversation",
+            "lines": [
+                ("A", "你怎么去公司？", "Nǐ zěnme qù gōngsī?", "How do you go to work?"),
+                ("B", "我坐地铁，有时候坐公共汽车。", "Wǒ zuò dìtiě, yǒu shíhou zuò gōnggòng qìchē.", "I take the subway, sometimes the bus."),
+                ("A", "明天一起去吗？", "Míngtiān yìqǐ qù ma?", "Want to go together tomorrow?"),
+                ("B", "可以，地铁站八点见。", "Kěyǐ, dìtiězhàn bā diǎn jiàn.", "Sure, see you at the subway station at 8."),
+            ],
+        },
+        {
+            "title": "3) Social + Food Conversation",
+            "lines": [
+                ("A", "你吃饭了吗？", "Nǐ chīfàn le ma?", "Have you eaten?"),
+                ("B", "还没有，来不及吃早饭。", "Hái méiyǒu, lái bu jí chī zǎofàn.", "Not yet, I didn't have time for breakfast."),
+                ("A", "那我们先去餐厅吧。", "Nà wǒmen xiān qù cāntīng ba.", "Then let's go to a restaurant first."),
+                ("B", "好啊，不客气，我请你。", "Hǎo a, bú kèqi, wǒ qǐng nǐ.", "Sounds good. It's my treat."),
+            ],
+        },
+    ]
 
-English:  
-A: Are you free now?  
-B: Yes, what happened?  
-A: I want to ask how this plan is.  
-B: It may need small changes, but it's almost done.
-"""
-    )
-
-    st.markdown("### 2) Commute Conversation")
-    st.markdown(
-        """
-A: 你怎么去公司？  
-B: 我坐地铁，有时候坐公共汽车。  
-A: 明天一起去吗？  
-B: 可以，地铁站八点见。  
-
-English:  
-A: How do you go to work?  
-B: I take the subway, sometimes the bus.  
-A: Want to go together tomorrow?  
-B: Sure, see you at the subway station at 8.
-"""
-    )
-
-    st.markdown("### 3) Social + Food Conversation")
-    st.markdown(
-        """
-A: 你吃饭了吗？  
-B: 还没有，来不及吃早饭。  
-A: 那我们先去餐厅吧。  
-B: 好啊，不客气，我请你。  
-
-English:  
-A: Have you eaten?  
-B: Not yet, I didn't have time for breakfast.  
-A: Then let's go to a restaurant first.  
-B: Sounds good. It's my treat.
-"""
-    )
+    for convo in conversations:
+        st.markdown(f"#### {convo['title']}")
+        st.markdown("| Speaker | Hanzi | Pinyin | English |")
+        st.markdown("|---|---|---|---|")
+        for role, hanzi, pinyin, english in convo["lines"]:
+            st.markdown(f"| {role} | {hanzi} | {pinyin} | {english} |")
 
 with tab_quiz:
-    st.markdown("### Quick Quiz")
-    st.markdown(
-        """
-1. Translate to Mandarin: "I am at the subway station."  
-2. Translate to English: "我们以后再聊。"  
-3. Fill in blank: 我___你打电话。 (给 / 在)  
-4. Fill in blank: 现在出发还___。 (来得及 / 来不及)  
-5. Reply to "谢谢你": (A) 不客气 (B) 为什么  
-6. Translate to Mandarin: "Let's go together tomorrow."  
-"""
-    )
+    st.markdown("### Quick Quiz: Fill, Choose, and Score")
+    st.caption("Write your own answers, then check instantly. You get score + per-question feedback.")
 
-    with st.expander("Show Answer Key"):
-        st.markdown(
-            """
-1. 我在地铁站。  
-2. Let's talk later.  
-3. 给  
-4. 来得及  
-5. A (不客气)  
-6. 我们明天一起去吧。
-"""
-        )
+    quiz_items = [
+        {
+            "id": "q1",
+            "type": "text_zh",
+            "prompt": 'Translate to Mandarin: "I am at the subway station."',
+            "answers": ["我在地铁站", "我在地铁站。"],
+            "explain": "Use 在 for location: 我在 + place.",
+        },
+        {
+            "id": "q2",
+            "type": "text_en",
+            "prompt": 'Translate to English: "我们以后再聊。"',
+            "answers": ["lets talk later", "let us talk later", "we can talk later"],
+            "explain": "以后再聊 = talk later / chat later.",
+        },
+        {
+            "id": "q3",
+            "type": "choice",
+            "prompt": "Fill in blank: 我___你打电话。",
+            "options": ["给", "在"],
+            "answer": "给",
+            "explain": "给 + person + 打电话 = call someone.",
+        },
+        {
+            "id": "q4",
+            "type": "choice",
+            "prompt": "Fill in blank: 现在出发还___。",
+            "options": ["来得及", "来不及"],
+            "answer": "来得及",
+            "explain": "来得及 = still enough time.",
+        },
+        {
+            "id": "q5",
+            "type": "choice",
+            "prompt": 'Best reply to "谢谢你" is:',
+            "options": ["不客气", "为什么"],
+            "answer": "不客气",
+            "explain": "不客气 means \"you're welcome.\"",
+        },
+        {
+            "id": "q6",
+            "type": "text_zh",
+            "prompt": 'Translate to Mandarin: "Let\'s go together tomorrow."',
+            "answers": ["我们明天一起去吧", "明天我们一起去吧"],
+            "explain": "一起 + 去 + 吧 makes a natural suggestion.",
+        },
+        {
+            "id": "q7",
+            "type": "text_zh",
+            "prompt": 'Fill in Hanzi: "kěnéng" (means maybe/possibly) = ___',
+            "answers": ["可能"],
+            "explain": "可能 = maybe / possible.",
+        },
+        {
+            "id": "q8",
+            "type": "text_zh",
+            "prompt": 'Complete sentence in Hanzi: 地铁___就在前面。(station)',
+            "answers": ["站", "地铁站"],
+            "explain": "地铁站 = subway station.",
+        },
+    ]
+
+    with st.form("interactive_quiz_form"):
+        user_answers = {}
+        for idx, item in enumerate(quiz_items, start=1):
+            st.markdown(f"**{idx}. {item['prompt']}**")
+            if item["type"] == "choice":
+                user_answers[item["id"]] = st.radio(
+                    "Choose one",
+                    options=item["options"],
+                    key=f"quiz_{item['id']}",
+                    horizontal=True,
+                )
+            else:
+                user_answers[item["id"]] = st.text_input("Your answer", key=f"quiz_{item['id']}")
+        submitted = st.form_submit_button("Check My Answers")
+
+    if submitted:
+        score = 0
+        st.markdown("### Result")
+        for idx, item in enumerate(quiz_items, start=1):
+            user_val = user_answers.get(item["id"], "")
+            ok = False
+
+            if item["type"] == "choice":
+                ok = user_val == item["answer"]
+                correct_text = item["answer"]
+            elif item["type"] == "text_en":
+                normalized = normalize_en_answer(user_val)
+                ok = normalized in {normalize_en_answer(ans) for ans in item["answers"]}
+                correct_text = item["answers"][0]
+            else:
+                normalized = normalize_zh_answer(user_val)
+                ok = normalized in {normalize_zh_answer(ans) for ans in item["answers"]}
+                correct_text = item["answers"][0]
+
+            if ok:
+                score += 1
+                st.success(f"{idx}. Correct")
+            else:
+                st.error(f"{idx}. Not yet")
+
+            st.caption(f"Your answer: {user_val if user_val else '(empty)'}")
+            st.caption(f"Suggested answer: {correct_text}")
+            st.caption(f"Tip: {item['explain']}")
+
+        total = len(quiz_items)
+        st.markdown(f"**Score: {score}/{total}**")
+        st.progress(score / total)
+        if score == total:
+            st.balloons()
 
 st.info(
     "Tip: Keep official HSK filter broad, then use Level 1-10 to progressively increase difficulty from high-frequency daily words to advanced low-frequency words."
