@@ -12,6 +12,13 @@ const state = {
   cueIndex: 0,
   cueFlipped: false,
   quizItems: [],
+  aiMessages: [
+    {
+      role: "assistant",
+      content: "你好！我们用中文聊天。你写一句中文，我会自然地回答，也会帮你改正语法、用词和语气。",
+    },
+  ],
+  aiBusy: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -372,6 +379,92 @@ function checkTranslationQuiz() {
   $("quiz-score").textContent = `Score: ${correct}/${inputs.length}`;
 }
 
+function isSidebarOpen() {
+  const sidebar = $("sidebar");
+  if (sidebar.classList.contains("open")) return true;
+  if (sidebar.classList.contains("closed")) return false;
+  return window.matchMedia("(min-width: 861px)").matches;
+}
+
+function setSidebarOpen(open) {
+  const sidebar = $("sidebar");
+  sidebar.classList.toggle("open", open);
+  sidebar.classList.toggle("closed", !open);
+  $("sidebar-toggle").setAttribute("aria-expanded", String(open));
+  $("sidebar-toggle").setAttribute("aria-label", open ? "Close filters" : "Open filters");
+}
+
+function setAiStatus(message, isError = false) {
+  $("ai-status").textContent = message;
+  $("ai-status").classList.toggle("error", isError);
+}
+
+function renderAiChat() {
+  $("ai-chat-log").innerHTML = state.aiMessages
+    .map((message) => {
+      const roleLabel = message.role === "user" ? "You" : "AI";
+      return `<div class="ai-message ${escapeHtml(message.role)}"><span class="ai-role">${roleLabel}</span>${escapeHtml(message.content)}</div>`;
+    })
+    .join("");
+  $("ai-chat-log").scrollTop = $("ai-chat-log").scrollHeight;
+}
+
+function resetAiTutor() {
+  state.aiMessages = [
+    {
+      role: "assistant",
+      content: "你好！我们重新开始。请用中文告诉我：你今天想练习什么话题？",
+    },
+  ];
+  setAiStatus("");
+  renderAiChat();
+}
+
+function setAiBusy(isBusy) {
+  state.aiBusy = isBusy;
+  $("ai-send").disabled = isBusy;
+  $("ai-chat-input").disabled = isBusy;
+  $("ai-reset").disabled = isBusy;
+  if (isBusy) setAiStatus("Thinking...");
+}
+
+async function sendAiMessage(event) {
+  event.preventDefault();
+  if (state.aiBusy) return;
+
+  const input = $("ai-chat-input");
+  const text = input.value.trim();
+  if (!text) {
+    setAiStatus("Write a Mandarin sentence first.", true);
+    return;
+  }
+
+  input.value = "";
+  state.aiMessages.push({ role: "user", content: text });
+  renderAiChat();
+  setAiBusy(true);
+
+  try {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        level: $("ai-level").value,
+        messages: state.aiMessages.slice(-12),
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || "The AI tutor could not respond.");
+    state.aiMessages.push({ role: "assistant", content: data.reply });
+    renderAiChat();
+    setAiStatus("");
+  } catch (error) {
+    setAiStatus(error.message, true);
+  } finally {
+    setAiBusy(false);
+  }
+}
+
 function renderCueCards() {
   const deck = displayRows().length ? displayRows() : state.vocab;
   if (!deck.length) return;
@@ -457,8 +550,12 @@ function wireEvents() {
     if (char) renderStrokeChar(char);
   });
 
-  $("sidebar-toggle").addEventListener("click", () => $("sidebar").classList.add("open"));
-  $("sidebar-close").addEventListener("click", () => $("sidebar").classList.remove("open"));
+  $("sidebar-toggle").setAttribute("aria-expanded", String(isSidebarOpen()));
+  $("sidebar-toggle").addEventListener("click", () => setSidebarOpen(!isSidebarOpen()));
+  $("sidebar-close").addEventListener("click", () => setSidebarOpen(false));
+  window.addEventListener("resize", () => {
+    $("sidebar-toggle").setAttribute("aria-expanded", String(isSidebarOpen()));
+  });
 
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -480,6 +577,9 @@ function wireEvents() {
 
   $("quiz-count").addEventListener("input", () => ($("quiz-count-display").textContent = $("quiz-count").value));
   $("btn-generate-quiz").addEventListener("click", renderQuiz);
+  $("ai-chat-form").addEventListener("submit", sendAiMessage);
+  $("ai-reset").addEventListener("click", resetAiTutor);
+  renderAiChat();
 }
 
 async function init() {

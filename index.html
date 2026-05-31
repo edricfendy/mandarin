@@ -82,6 +82,7 @@
         <button class="tab-btn active" data-tab="vocab">Vocabulary Explorer</button>
         <button class="tab-btn" data-tab="stroke">Stroke Order</button>
         <button class="tab-btn" data-tab="convo">Daily Conversation</button>
+        <button class="tab-btn" data-tab="ai">AI Tutor</button>
         <button class="tab-btn" data-tab="quiz">Quick Quiz</button>
         <button class="tab-btn" data-tab="cue">Cue Cards</button>
       </nav>
@@ -133,6 +134,29 @@
         </div>
         <div id="convo-ref" class="convo-panel active"></div>
         <div id="convo-drag" class="convo-panel"></div>
+      </section>
+
+      <section id="panel-ai" class="tab-panel">
+        <h2 class="panel-title">AI Mandarin Tutor</h2>
+        <div class="ai-shell">
+          <div class="ai-toolbar">
+            <div class="form-group">
+              <label for="ai-level">Level</label>
+              <select id="ai-level" class="filter-select">
+                <option value="beginner">Beginner</option>
+                <option value="intermediate" selected>Intermediate</option>
+                <option value="advanced">Advanced</option>
+              </select>
+            </div>
+            <button id="ai-reset" type="button" class="btn btn-secondary">Reset</button>
+          </div>
+          <div id="ai-status" class="ai-status"></div>
+          <div id="ai-chat-log" class="ai-chat-log" aria-live="polite"></div>
+          <form id="ai-chat-form" class="ai-chat-form">
+            <textarea id="ai-chat-input" class="ai-chat-input" rows="3" placeholder="用中文写一句话..."></textarea>
+            <button id="ai-send" type="submit" class="btn btn-primary">Send</button>
+          </form>
+        </div>
       </section>
 
       <section id="panel-quiz" class="tab-panel">
