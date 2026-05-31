@@ -1,5 +1,43 @@
-const OPENAI_API_URL = "https://api.openai.com/v1/responses";
-const DEFAULT_MODEL = "gpt-5.4-mini";
+const PROVIDERS = {
+  openai: {
+    keyEnv: "OPENAI_API_KEY",
+    modelEnv: "OPENAI_MODEL",
+    defaultModel: "gpt-5.4-mini",
+    url: "https://api.openai.com/v1/responses",
+    mode: "responses",
+  },
+  openrouter: {
+    keyEnv: "OPENROUTER_API_KEY",
+    modelEnv: "OPENROUTER_MODEL",
+    defaultModel: "openai/gpt-oss-20b:free",
+    url: "https://openrouter.ai/api/v1/chat/completions",
+    mode: "chat",
+  },
+  ollama: {
+    keyEnv: null,
+    modelEnv: "OLLAMA_MODEL",
+    defaultModel: "gpt-oss:20b",
+    url: "http://127.0.0.1:11434/v1/chat/completions",
+    urlEnv: "OLLAMA_BASE_URL",
+    mode: "chat",
+  },
+  groq: {
+    keyEnv: "GROQ_API_KEY",
+    modelEnv: "GROQ_MODEL",
+    defaultModel: "llama-3.3-70b-versatile",
+    url: "https://api.groq.com/openai/v1/chat/completions",
+    mode: "chat",
+  },
+  huggingface: {
+    keyEnv: "HF_TOKEN",
+    modelEnv: "HF_MODEL",
+    defaultModel: "deepseek-ai/DeepSeek-R1:fastest",
+    url: "https://router.huggingface.co/v1/chat/completions",
+    mode: "chat",
+  },
+};
+
+const PROVIDER_PRIORITY = ["openrouter", "groq", "huggingface", "openai"];
 
 function sendJson(res, status, payload) {
   res.statusCode = status;
@@ -28,7 +66,54 @@ function sanitizeMessages(messages) {
     }));
 }
 
-function extractOutputText(payload) {
+function buildInstructions(level) {
+  return [
+    "You are a Mandarin Chinese conversation tutor.",
+    `The learner level is ${level}.`,
+    "Reply mainly in Mandarin Chinese, using short English only when needed for clarity.",
+    "If the learner makes a grammar, word choice, tone, or naturalness mistake, correct it gently.",
+    "Use this compact structure when there is a mistake: Correction, Why, Better reply.",
+    "If the learner is already correct, say it is natural and continue the conversation with one question.",
+    "Keep replies concise enough for a language practice chat.",
+  ].join(" ");
+}
+
+function resolveProvider() {
+  const requested = String(process.env.AI_PROVIDER || "").toLowerCase().trim();
+  if (requested && PROVIDERS[requested]) return { name: requested, config: PROVIDERS[requested] };
+
+  const available = PROVIDER_PRIORITY.find((name) => process.env[PROVIDERS[name].keyEnv]);
+  if (available) return { name: available, config: PROVIDERS[available] };
+
+  return { name: requested || "openai", config: PROVIDERS.openai };
+}
+
+function providerModel(name, config) {
+  return process.env.AI_MODEL || process.env[config.modelEnv] || config.defaultModel;
+}
+
+function providerKey(config) {
+  return config.keyEnv ? process.env[config.keyEnv] : "";
+}
+
+function providerUrl(config) {
+  const configuredUrl = config.urlEnv ? process.env[config.urlEnv] : "";
+  if (!configuredUrl) return config.url;
+
+  const trimmed = configuredUrl.replace(/\/+$/, "");
+  if (trimmed.endsWith("/chat/completions")) return trimmed;
+  if (trimmed.endsWith("/v1")) return `${trimmed}/chat/completions`;
+  return `${trimmed}/v1/chat/completions`;
+}
+
+function missingKeyError(name, config) {
+  const options = Object.entries(PROVIDERS)
+    .map(([providerName, provider]) => `${providerName}: ${provider.keyEnv || "no API key"}`)
+    .join(", ");
+  return `AI tutor needs an API key. Current provider "${name}" expects ${config.keyEnv}. You can also set AI_PROVIDER plus one of: ${options}.`;
+}
+
+function extractResponsesText(payload) {
   if (typeof payload.output_text === "string") return payload.output_text.trim();
 
   const parts = [];
@@ -40,18 +125,59 @@ function extractOutputText(payload) {
   return parts.join("\n").trim();
 }
 
+function extractChatText(payload) {
+  return String(payload?.choices?.[0]?.message?.content || "").trim();
+}
+
+function buildChatRequest(providerName, config, apiKey, model, instructions, messages) {
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+  if (providerName === "openrouter") {
+    headers["HTTP-Referer"] = "https://mandarin.vercel.app";
+    headers["X-OpenRouter-Title"] = "Mandarin Proficiency Trainer";
+  }
+
+  return {
+    url: providerUrl(config),
+    headers,
+    body: {
+      model,
+      messages: [{ role: "system", content: instructions }, ...messages],
+      temperature: 0.4,
+      max_tokens: 700,
+    },
+  };
+}
+
+function buildResponsesRequest(config, apiKey, model, instructions, messages) {
+  return {
+    url: providerUrl(config),
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: {
+      model,
+      instructions,
+      input: messages,
+      max_output_tokens: 700,
+    },
+  };
+}
+
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
     return sendJson(res, 405, { error: "Method not allowed." });
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return sendJson(res, 501, {
-      error: "AI tutor is deployed, but OPENAI_API_KEY is not configured in Vercel.",
-    });
-  }
+  const { name: providerName, config } = resolveProvider();
+  const apiKey = providerKey(config);
+  if (config.keyEnv && !apiKey) return sendJson(res, 501, { error: missingKeyError(providerName, config) });
 
   const body = parseBody(req);
   const level = ["beginner", "intermediate", "advanced"].includes(body.level) ? body.level : "intermediate";
@@ -62,40 +188,29 @@ module.exports = async function handler(req, res) {
     return sendJson(res, 400, { error: "Send a Mandarin practice message first." });
   }
 
-  const instructions = [
-    "You are a Mandarin Chinese conversation tutor.",
-    `The learner level is ${level}.`,
-    "Reply mainly in Mandarin Chinese, using short English only when needed for clarity.",
-    "If the learner makes a grammar, word choice, tone, or naturalness mistake, correct it gently.",
-    "Use this compact structure when there is a mistake: Correction, Why, Better reply.",
-    "If the learner is already correct, say it is natural and continue the conversation with one question.",
-    "Keep replies concise enough for a language practice chat.",
-  ].join(" ");
+  const instructions = buildInstructions(level);
+  const model = providerModel(providerName, config);
+  const request =
+    config.mode === "responses"
+      ? buildResponsesRequest(config, apiKey, model, instructions, messages)
+      : buildChatRequest(providerName, config, apiKey, model, instructions, messages);
 
   try {
-    const openaiResponse = await fetch(OPENAI_API_URL, {
+    const modelResponse = await fetch(request.url, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || DEFAULT_MODEL,
-        instructions,
-        input: messages,
-        max_output_tokens: 700,
-      }),
+      headers: request.headers,
+      body: JSON.stringify(request.body),
     });
 
-    const data = await openaiResponse.json().catch(() => ({}));
-    if (!openaiResponse.ok) {
-      const detail = data?.error?.message || "OpenAI request failed.";
+    const data = await modelResponse.json().catch(() => ({}));
+    if (!modelResponse.ok) {
+      const detail = data?.error?.message || `${providerName} request failed.`;
       return sendJson(res, 502, { error: detail });
     }
 
-    const reply = extractOutputText(data);
+    const reply = config.mode === "responses" ? extractResponsesText(data) : extractChatText(data);
     if (!reply) return sendJson(res, 502, { error: "The AI tutor returned an empty response." });
-    return sendJson(res, 200, { reply });
+    return sendJson(res, 200, { reply, provider: providerName, model });
   } catch (error) {
     return sendJson(res, 502, { error: error.message || "The AI tutor could not respond." });
   }
