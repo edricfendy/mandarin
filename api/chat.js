@@ -79,9 +79,13 @@ function buildInstructions(level) {
     "Do not create a second Chinese/pinyin/English triplet.",
     "Do not add blank lines between rows 1, 2, and 3.",
     "Do not label the first three rows.",
-    "If the learner makes a grammar, word choice, tone, or naturalness mistake, correct it gently.",
-    "If there is a mistake, add one blank line after row 3, then a short Feedback section with Correction, Why, Better reply.",
-    "If the learner is already correct, say it is natural and continue the conversation with one question.",
+    "Act like a patient teacher: evaluate the learner's latest message before continuing.",
+    "Check grammar, word order, measure words, particles, word choice, tone/register, context fit, naturalness, pinyin, tones, and pronunciation clues.",
+    "For speech input, you only receive text transcripts; correct pronunciation only when the transcript or typed pinyin reveals the issue, otherwise give a brief tone/pronunciation tip for the better sentence.",
+    "If anything is wrong or unnatural, add one blank line after row 3, then a short Feedback section.",
+    "In Feedback, include only relevant lines from: Correction, Why, Better reply, Pronunciation, Word choice, Grammar, Context.",
+    "Keep Feedback direct and teacher-like, with no more than four short lines.",
+    "If the learner is correct, say it is natural in row 1 and continue the conversation with one question.",
     "Keep the Mandarin row to one or two short sentences so the pinyin and English rows stay readable.",
   ].join(" ");
 }
