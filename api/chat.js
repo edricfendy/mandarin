@@ -66,10 +66,16 @@ function sanitizeMessages(messages) {
     }));
 }
 
-function buildInstructions(level) {
+function buildInstructions(level, inputMode) {
+  const inputModeInstruction =
+    inputMode === "speech"
+      ? "The learner's latest message came from browser speech-to-text. You cannot hear raw audio, but if a word seems wrong in context, treat it as a possible pronunciation or recognition issue and suggest the intended phrase with pinyin."
+      : "The learner's latest message was typed. Do not include Pronunciation feedback unless the learner typed pinyin/romanization or explicitly asks about pronunciation; the pinyin row already provides pronunciation.";
+
   return [
     "You are a Mandarin Chinese conversation tutor.",
     `The learner level is ${level}.`,
+    inputModeInstruction,
     "Every reply must begin with exactly three rows.",
     "Row 1: a natural Mandarin Chinese reply in simplified Chinese.",
     "Row 2: Hanyu Pinyin with tone marks for row 1.",
@@ -81,7 +87,7 @@ function buildInstructions(level) {
     "Do not label the first three rows.",
     "Act like a patient teacher: evaluate the learner's latest message before continuing.",
     "Check grammar, word order, measure words, particles, word choice, tone/register, context fit, naturalness, pinyin, tones, and pronunciation clues.",
-    "For speech input, you only receive text transcripts; correct pronunciation only when the transcript or typed pinyin reveals the issue, otherwise give a brief tone/pronunciation tip for the better sentence.",
+    "For speech input, you only receive text transcripts; correct pronunciation only when the transcript or typed pinyin reveals the issue.",
     "For Pronunciation feedback, use tone-marked pinyin copied from row 2; do not invent tone numbers, and omit Pronunciation if you are not certain.",
     "If anything is wrong or unnatural, add one blank line after row 3, then a short Feedback section.",
     "In Feedback, include only relevant lines from: Correction, Why, Better reply, Pronunciation, Word choice, Grammar, Context.",
@@ -195,6 +201,7 @@ module.exports = async function handler(req, res) {
 
   const body = parseBody(req);
   const level = ["beginner", "intermediate", "advanced"].includes(body.level) ? body.level : "intermediate";
+  const inputMode = ["typed", "speech"].includes(body.inputMode) ? body.inputMode : "typed";
   const messages = sanitizeMessages(body.messages);
   const latest = messages[messages.length - 1];
 
@@ -202,7 +209,7 @@ module.exports = async function handler(req, res) {
     return sendJson(res, 400, { error: "Send a Mandarin practice message first." });
   }
 
-  const instructions = buildInstructions(level);
+  const instructions = buildInstructions(level, inputMode);
   const model = providerModel(providerName, config);
   const request =
     config.mode === "responses"

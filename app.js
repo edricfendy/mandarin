@@ -500,6 +500,7 @@ async function sendAiMessage(event, textOverride = "") {
   if (state.aiBusy) return;
 
   const input = $("ai-chat-input");
+  const inputMode = textOverride ? "speech" : "typed";
   const text = (textOverride || input.value).trim();
   if (!text) {
     setAiStatus("Write a Mandarin sentence first.", true);
@@ -517,6 +518,7 @@ async function sendAiMessage(event, textOverride = "") {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         level: $("ai-level").value,
+        inputMode,
         messages: state.aiMessages.slice(-12),
       }),
     });
