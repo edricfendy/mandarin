@@ -26,7 +26,10 @@ const state = {
     supported: false,
     baseText: "",
     finalText: "",
+    interimText: "",
     hadError: false,
+    stopRequested: false,
+    restartTimer: null,
   },
 };
 
@@ -469,11 +472,45 @@ function updateVoiceButton() {
   btn.setAttribute("aria-pressed", String(state.aiVoice.listening));
 }
 
+function clearVoiceRestart() {
+  if (!state.aiVoice.restartTimer) return false;
+  clearTimeout(state.aiVoice.restartTimer);
+  state.aiVoice.restartTimer = null;
+  return true;
+}
+
+function currentVoiceText() {
+  return [state.aiVoice.baseText, state.aiVoice.finalText, state.aiVoice.interimText].filter(Boolean).join(" ").trim();
+}
+
+function finishVoiceInput() {
+  const spokenText = currentVoiceText();
+  state.aiVoice.listening = false;
+  state.aiVoice.stopRequested = false;
+  state.aiVoice.interimText = "";
+  updateVoiceButton();
+  if (state.aiVoice.hadError) return;
+  if (spokenText) sendAiMessage(null, spokenText);
+  else if (!$("ai-status").classList.contains("error")) setAiStatus("No speech detected.", true);
+}
+
 function resetAiTutor() {
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
   if (state.aiVoice.listening && state.aiVoice.recognition) {
+    const wasRestarting = clearVoiceRestart();
+    state.aiVoice.stopRequested = true;
     state.aiVoice.hadError = true;
-    state.aiVoice.recognition.stop();
+    if (wasRestarting) {
+      state.aiVoice.listening = false;
+      updateVoiceButton();
+    } else {
+      try {
+        state.aiVoice.recognition.stop();
+      } catch {
+        state.aiVoice.listening = false;
+        updateVoiceButton();
+      }
+    }
   }
   state.aiMessages = [
     {
@@ -545,18 +582,16 @@ function setupVoiceTutor() {
   }
 
   const recognition = new SpeechRecognition();
-  recognition.continuous = false;
+  recognition.continuous = true;
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
   state.aiVoice.recognition = recognition;
 
   recognition.onstart = () => {
+    clearVoiceRestart();
     state.aiVoice.listening = true;
-    state.aiVoice.baseText = $("ai-chat-input").value.trim();
-    state.aiVoice.finalText = "";
-    state.aiVoice.hadError = false;
     updateVoiceButton();
-    setAiStatus("Listening...");
+    setAiStatus("Listening... press Stop when done.");
   };
 
   recognition.onresult = (event) => {
@@ -566,23 +601,47 @@ function setupVoiceTutor() {
       if (event.results[i].isFinal) state.aiVoice.finalText = `${state.aiVoice.finalText} ${transcript}`.trim();
       else interim = `${interim} ${transcript}`.trim();
     }
-    $("ai-chat-input").value = [state.aiVoice.baseText, state.aiVoice.finalText, interim].filter(Boolean).join(" ");
+    state.aiVoice.interimText = interim;
+    $("ai-chat-input").value = currentVoiceText();
   };
 
   recognition.onerror = (event) => {
+    if (event.error === "no-speech" && !state.aiVoice.stopRequested) {
+      setAiStatus("Still listening... press Stop when done.");
+      return;
+    }
+    if (event.error === "aborted" && state.aiVoice.stopRequested) return;
+
     state.aiVoice.hadError = true;
-    state.aiVoice.finalText = "";
-    const message = event.error === "not-allowed" ? "Microphone permission was blocked." : "Could not hear that clearly.";
+    const message =
+      event.error === "not-allowed"
+        ? "Microphone permission was blocked."
+        : event.error === "audio-capture"
+          ? "No microphone was found."
+          : "Voice input stopped. Please try again.";
     setAiStatus(message, true);
   };
 
   recognition.onend = () => {
-    const spokenText = [state.aiVoice.baseText, state.aiVoice.finalText].filter(Boolean).join(" ").trim();
-    state.aiVoice.listening = false;
-    updateVoiceButton();
-    if (state.aiVoice.hadError) return;
-    if (spokenText) sendAiMessage(null, spokenText);
-    else if (!$("ai-status").classList.contains("error")) setAiStatus("No speech detected.", true);
+    if (!state.aiVoice.stopRequested && !state.aiVoice.hadError) {
+      state.aiVoice.listening = true;
+      updateVoiceButton();
+      setAiStatus("Still listening... press Stop when done.");
+      clearVoiceRestart();
+      state.aiVoice.restartTimer = setTimeout(() => {
+        try {
+          recognition.start();
+        } catch {
+          state.aiVoice.listening = false;
+          updateVoiceButton();
+          setAiStatus("Voice input paused. Press Speak to continue.", true);
+        }
+      }, 350);
+      return;
+    }
+
+    clearVoiceRestart();
+    finishVoiceInput();
   };
 
   $("ai-voice-lang").addEventListener("change", () => {
@@ -595,10 +654,26 @@ function setupVoiceTutor() {
 function toggleVoiceInput() {
   if (!state.aiVoice.supported || !state.aiVoice.recognition || state.aiBusy) return;
   if (state.aiVoice.listening) {
-    state.aiVoice.recognition.stop();
+    const wasRestarting = clearVoiceRestart();
+    state.aiVoice.stopRequested = true;
+    if (wasRestarting) {
+      finishVoiceInput();
+      return;
+    }
+    try {
+      state.aiVoice.recognition.stop();
+    } catch {
+      finishVoiceInput();
+    }
     return;
   }
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  clearVoiceRestart();
+  state.aiVoice.baseText = $("ai-chat-input").value.trim();
+  state.aiVoice.finalText = "";
+  state.aiVoice.interimText = "";
+  state.aiVoice.hadError = false;
+  state.aiVoice.stopRequested = false;
   state.aiVoice.recognition.lang = $("ai-voice-lang").value;
   try {
     state.aiVoice.recognition.start();
