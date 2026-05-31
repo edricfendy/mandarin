@@ -434,12 +434,12 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-card);
-  white-space: pre-wrap;
 }
 .ai-message.user {
   justify-self: end;
   background: var(--accent-glow);
   border-color: var(--accent);
+  white-space: pre-wrap;
 }
 .ai-message.assistant {
   justify-self: start;
@@ -454,6 +454,30 @@ body {
   color: var(--text-dim);
 }
 .ai-message.user .ai-role { color: var(--accent-light); }
+.ai-reply-row {
+  display: block;
+  white-space: pre-wrap;
+}
+.ai-row-zh {
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 600;
+}
+.ai-row-pinyin {
+  color: var(--accent-light);
+  font-size: 14px;
+  margin-top: 2px;
+}
+.ai-row-en {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-top: 2px;
+}
+.ai-row-extra {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-top: 8px;
+}
 .ai-chat-form {
   display: grid;
   grid-template-columns: 1fr auto;

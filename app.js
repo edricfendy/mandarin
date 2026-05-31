@@ -15,7 +15,8 @@ const state = {
   aiMessages: [
     {
       role: "assistant",
-      content: "你好！我们用中文聊天。你写一句中文，我会自然地回答，也会帮你改正语法、用词和语气。",
+      content:
+        "你好！我们用中文聊天。你写一句中文，我会自然地回答，也会帮你改正语法、用词和语气。\nNǐ hǎo! Wǒmen yòng Zhōngwén liáotiān. Nǐ xiě yí jù Zhōngwén, wǒ huì zìrán de huídá, yě huì bāng nǐ gǎizhèng yǔfǎ, yòngcí hé yǔqì.\nHello! We will chat in Chinese. Write one Chinese sentence, and I will answer naturally and help correct grammar, word choice, and tone.",
     },
   ],
   aiBusy: false,
@@ -407,11 +408,23 @@ function setAiStatus(message, isError = false) {
   $("ai-status").classList.toggle("error", isError);
 }
 
+function formatAiMessageContent(message) {
+  if (message.role !== "assistant") return escapeHtml(message.content);
+
+  const lines = String(message.content ?? "").split(/\r?\n/);
+  return lines
+    .map((line, index) => {
+      const rowClass = index === 0 ? "ai-row-zh" : index === 1 ? "ai-row-pinyin" : index === 2 ? "ai-row-en" : "ai-row-extra";
+      return `<span class="ai-reply-row ${rowClass}">${escapeHtml(line) || "&nbsp;"}</span>`;
+    })
+    .join("");
+}
+
 function renderAiChat() {
   $("ai-chat-log").innerHTML = state.aiMessages
     .map((message) => {
       const roleLabel = message.role === "user" ? "You" : "AI";
-      return `<div class="ai-message ${escapeHtml(message.role)}"><span class="ai-role">${roleLabel}</span>${escapeHtml(message.content)}</div>`;
+      return `<div class="ai-message ${escapeHtml(message.role)}"><span class="ai-role">${roleLabel}</span>${formatAiMessageContent(message)}</div>`;
     })
     .join("");
   $("ai-chat-log").scrollTop = $("ai-chat-log").scrollHeight;
@@ -426,7 +439,11 @@ function pickMandarinVoice(lang) {
 function speakAiReply(text) {
   if (!$("ai-speak-replies").checked || !("speechSynthesis" in window)) return;
   window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
+  const mandarinRow = String(text)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  const utterance = new SpeechSynthesisUtterance(mandarinRow || text);
   utterance.lang = $("ai-voice-lang").value;
   utterance.rate = 0.92;
   const voice = pickMandarinVoice(utterance.lang);
@@ -450,7 +467,8 @@ function resetAiTutor() {
   state.aiMessages = [
     {
       role: "assistant",
-      content: "你好！我们重新开始。请用中文告诉我：你今天想练习什么话题？",
+      content:
+        "你好！我们重新开始。请用中文告诉我：你今天想练习什么话题？\nNǐ hǎo! Wǒmen chóngxīn kāishǐ. Qǐng yòng Zhōngwén gàosu wǒ: nǐ jīntiān xiǎng liànxí shénme huàtí?\nHello! Let us start again. Please tell me in Chinese: what topic do you want to practice today?",
     },
   ];
   setAiStatus("");
