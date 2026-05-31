@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mandarin Proficiency Trainer</title>
+  <meta name="description" content="Interactive Mandarin Chinese learning app with vocabulary explorer, stroke order practice, daily conversations, quizzes, and cue cards." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>汉</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app-loader" class="loader-overlay">
+    <div class="loader-content">
+      <div class="loader-icon">汉</div>
+      <div class="loader-text">Loading vocabulary…</div>
+      <div class="loader-bar"><div class="loader-bar-fill"></div></div>
+    </div>
+  </div>
+
+  <div id="app" class="app hidden">
+    <!-- SIDEBAR -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-header">
+        <h2>Study Filters</h2>
+        <button id="sidebar-close" class="sidebar-close" aria-label="Close sidebar">✕</button>
+      </div>
+      <div class="sidebar-body">
+        <div class="filter-group">
+          <label class="filter-label">Proficiency Level (1–10)</label>
+          <div id="filter-proficiency" class="chip-grid"></div>
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">Official HSK Levels</label>
+          <div id="filter-hsk" class="chip-grid"></div>
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">Character Length</label>
+          <div id="filter-length" class="chip-grid"></div>
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">Search Hanzi / Pinyin / English</label>
+          <input id="filter-keyword" type="text" class="filter-input" placeholder="Type to search…" />
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">Character Family Search</label>
+          <input id="filter-family" type="text" class="filter-input" placeholder="e.g. 新 or xin" />
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">Sort By</label>
+          <select id="filter-sort" class="filter-select">
+            <option value="pinyin">Alphabetical (Pinyin A–Z)</option>
+            <option value="hanzi">Alphabetical (Hanzi)</option>
+            <option value="frequency">Frequency (common first)</option>
+            <option value="proficiency">Proficiency Level</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">Max rows to show</label>
+          <input id="filter-maxrows" type="number" class="filter-input" value="200" min="20" max="99999" step="20" />
+          <label class="filter-checkbox-wrap">
+            <input id="filter-showall" type="checkbox" checked /> Show all filtered rows
+          </label>
+        </div>
+      </div>
+    </aside>
+
+    <!-- MAIN -->
+    <main class="main-content">
+      <header class="app-header">
+        <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Open filters">☰</button>
+        <div class="app-title-block">
+          <h1 class="app-title">Mandarin Proficiency Trainer</h1>
+          <p class="app-subtitle">Vocabulary explorer · Stroke order · Daily dialogue · Quiz · Cue cards</p>
+        </div>
+      </header>
+
+      <!-- TABS -->
+      <nav class="tab-bar" id="tab-bar">
+        <button class="tab-btn active" data-tab="vocab">Vocabulary Explorer</button>
+        <button class="tab-btn" data-tab="stroke">Stroke Order</button>
+        <button class="tab-btn" data-tab="convo">Daily Conversation</button>
+        <button class="tab-btn" data-tab="quiz">Quick Quiz</button>
+        <button class="tab-btn" data-tab="cue">Cue Cards</button>
+      </nav>
+
+      <!-- TAB PANELS -->
+      <section id="panel-vocab" class="tab-panel active">
+        <div class="metrics-row" id="vocab-metrics"></div>
+        <div class="panel-actions">
+          <button id="btn-shuffle-examples" class="btn btn-secondary">🔀 Randomize Examples</button>
+          <button id="btn-download-csv" class="btn btn-secondary">📥 Download Filtered CSV</button>
+        </div>
+        <div class="table-wrap">
+          <table id="vocab-table" class="data-table">
+            <thead>
+              <tr>
+                <th>Hanzi</th><th>Pinyin</th><th>English</th><th>Chars</th>
+                <th>Level</th><th>HSK</th><th>Example (中文)</th><th>Example (EN)</th>
+              </tr>
+            </thead>
+            <tbody id="vocab-tbody"></tbody>
+          </table>
+        </div>
+        <div id="vocab-pagination" class="pagination"></div>
+      </section>
+
+      <section id="panel-stroke" class="tab-panel">
+        <h2 class="panel-title">Stroke Order Writing Exercise</h2>
+        <p class="panel-desc">Pick a Hanzi, then write it correctly. The checker validates each stroke as you draw.</p>
+        <div class="stroke-controls-row">
+          <div class="form-group">
+            <label>Choose from filter</label>
+            <select id="stroke-picker" class="filter-select"></select>
+          </div>
+          <div class="form-group">
+            <label>Or type a Hanzi</label>
+            <input id="stroke-custom" type="text" class="filter-input" placeholder="e.g. 你" />
+          </div>
+        </div>
+        <div id="stroke-info" class="stroke-info"></div>
+        <div id="stroke-widget" class="stroke-widget"></div>
+        <div id="stroke-related" class="stroke-related"></div>
+      </section>
+
+      <section id="panel-convo" class="tab-panel">
+        <h2 class="panel-title">Daily Conversation</h2>
+        <div class="convo-subtabs">
+          <button class="convo-subtab active" data-convo-tab="ref">Reference</button>
+          <button class="convo-subtab" data-convo-tab="drag">Drag & Drop Practice</button>
+        </div>
+        <div id="convo-ref" class="convo-panel active"></div>
+        <div id="convo-drag" class="convo-panel"></div>
+      </section>
+
+      <section id="panel-quiz" class="tab-panel">
+        <h2 class="panel-title">Quick Quiz</h2>
+        <p class="panel-desc">Choose quiz mode, prompt style, and question count.</p>
+        <div class="quiz-options">
+          <div class="form-group">
+            <label>Quiz mode</label>
+            <div class="radio-row">
+              <label><input type="radio" name="quiz-mode" value="cloze" checked /> Drag & Drop Cloze</label>
+              <label><input type="radio" name="quiz-mode" value="translation" /> English Translation</label>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Prompt display</label>
+            <div class="radio-row">
+              <label><input type="radio" name="quiz-prompt" value="hanzi_pinyin" checked /> Hanzi + Pinyin</label>
+              <label><input type="radio" name="quiz-prompt" value="no_pinyin" /> No Pinyin</label>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Questions: <span id="quiz-count-display">24</span></label>
+            <input type="range" id="quiz-count" min="8" max="60" value="24" step="4" />
+          </div>
+          <button id="btn-generate-quiz" class="btn btn-primary">Generate Quiz</button>
+        </div>
+        <div id="quiz-area"></div>
+      </section>
+
+      <section id="panel-cue" class="tab-panel">
+        <h2 class="panel-title">Cue Cards</h2>
+        <p class="panel-desc">Front: Hanzi + pinyin + meaning. Back: usage sentence + pinyin + English.</p>
+        <div id="cue-widget"></div>
+      </section>
+
+      <div class="app-tip">
+        💡 <strong>Tip:</strong> Keep official HSK filter broad, then use Level 1–10 to progressively increase
+        difficulty from high-frequency daily words to advanced low-frequency words.
+      </div>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/hanzi-writer@3.7/dist/hanzi-writer.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
