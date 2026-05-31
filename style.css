@@ -404,6 +404,16 @@ body {
   gap: 12px; flex-wrap: wrap; margin-bottom: 12px;
 }
 .ai-toolbar .form-group { min-width: 180px; margin-bottom: 0; }
+.ai-speak-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 38px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+.ai-speak-toggle input { accent-color: var(--accent); }
 .ai-status {
   min-height: 22px; margin-bottom: 10px;
   font-size: 13px; color: var(--text-dim);
@@ -464,7 +474,17 @@ body {
   outline: none;
 }
 .ai-chat-input:focus { border-color: var(--border-focus); }
+.ai-action-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .ai-chat-form .btn { min-width: 92px; }
+#ai-voice.listening {
+  border-color: var(--success);
+  color: var(--success);
+  background: var(--success-bg);
+}
 
 /* QUIZ */
 .quiz-options {
@@ -570,6 +590,7 @@ body {
   .stroke-controls-row { flex-direction: column; }
   .quiz-options { flex-direction: column; }
   .ai-chat-form { grid-template-columns: 1fr; }
+  .ai-action-stack { flex-direction: row; }
   .ai-chat-form .btn { width: 100%; }
   .ai-message { max-width: 100%; }
   .cue-card { padding: 20px 44px; min-height: 220px; }

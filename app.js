@@ -19,6 +19,14 @@ const state = {
     },
   ],
   aiBusy: false,
+  aiVoice: {
+    recognition: null,
+    listening: false,
+    supported: false,
+    baseText: "",
+    finalText: "",
+    hadError: false,
+  },
 };
 
 const $ = (id) => document.getElementById(id);
@@ -409,7 +417,36 @@ function renderAiChat() {
   $("ai-chat-log").scrollTop = $("ai-chat-log").scrollHeight;
 }
 
+function pickMandarinVoice(lang) {
+  if (!("speechSynthesis" in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  return voices.find((voice) => voice.lang === lang) || voices.find((voice) => voice.lang.startsWith("zh")) || null;
+}
+
+function speakAiReply(text) {
+  if (!$("ai-speak-replies").checked || !("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = $("ai-voice-lang").value;
+  utterance.rate = 0.92;
+  const voice = pickMandarinVoice(utterance.lang);
+  if (voice) utterance.voice = voice;
+  window.speechSynthesis.speak(utterance);
+}
+
+function updateVoiceButton() {
+  const btn = $("ai-voice");
+  btn.classList.toggle("listening", state.aiVoice.listening);
+  btn.textContent = state.aiVoice.listening ? "Stop" : "Speak";
+  btn.setAttribute("aria-pressed", String(state.aiVoice.listening));
+}
+
 function resetAiTutor() {
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  if (state.aiVoice.listening && state.aiVoice.recognition) {
+    state.aiVoice.hadError = true;
+    state.aiVoice.recognition.stop();
+  }
   state.aiMessages = [
     {
       role: "assistant",
@@ -425,15 +462,16 @@ function setAiBusy(isBusy) {
   $("ai-send").disabled = isBusy;
   $("ai-chat-input").disabled = isBusy;
   $("ai-reset").disabled = isBusy;
+  $("ai-voice").disabled = isBusy || !state.aiVoice.supported;
   if (isBusy) setAiStatus("Thinking...");
 }
 
-async function sendAiMessage(event) {
-  event.preventDefault();
+async function sendAiMessage(event, textOverride = "") {
+  if (event) event.preventDefault();
   if (state.aiBusy) return;
 
   const input = $("ai-chat-input");
-  const text = input.value.trim();
+  const text = (textOverride || input.value).trim();
   if (!text) {
     setAiStatus("Write a Mandarin sentence first.", true);
     return;
@@ -458,10 +496,83 @@ async function sendAiMessage(event) {
     state.aiMessages.push({ role: "assistant", content: data.reply });
     renderAiChat();
     setAiStatus("");
+    speakAiReply(data.reply);
   } catch (error) {
     setAiStatus(error.message, true);
   } finally {
     setAiBusy(false);
+  }
+}
+
+function setupVoiceTutor() {
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  state.aiVoice.supported = Boolean(SpeechRecognition);
+  if (!state.aiVoice.supported) {
+    $("ai-voice").disabled = true;
+    setAiStatus("Speech input is not supported in this browser.", true);
+    return;
+  }
+
+  const recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  state.aiVoice.recognition = recognition;
+
+  recognition.onstart = () => {
+    state.aiVoice.listening = true;
+    state.aiVoice.baseText = $("ai-chat-input").value.trim();
+    state.aiVoice.finalText = "";
+    state.aiVoice.hadError = false;
+    updateVoiceButton();
+    setAiStatus("Listening...");
+  };
+
+  recognition.onresult = (event) => {
+    let interim = "";
+    for (let i = event.resultIndex; i < event.results.length; i += 1) {
+      const transcript = event.results[i][0].transcript.trim();
+      if (event.results[i].isFinal) state.aiVoice.finalText = `${state.aiVoice.finalText} ${transcript}`.trim();
+      else interim = `${interim} ${transcript}`.trim();
+    }
+    $("ai-chat-input").value = [state.aiVoice.baseText, state.aiVoice.finalText, interim].filter(Boolean).join(" ");
+  };
+
+  recognition.onerror = (event) => {
+    state.aiVoice.hadError = true;
+    state.aiVoice.finalText = "";
+    const message = event.error === "not-allowed" ? "Microphone permission was blocked." : "Could not hear that clearly.";
+    setAiStatus(message, true);
+  };
+
+  recognition.onend = () => {
+    const spokenText = [state.aiVoice.baseText, state.aiVoice.finalText].filter(Boolean).join(" ").trim();
+    state.aiVoice.listening = false;
+    updateVoiceButton();
+    if (state.aiVoice.hadError) return;
+    if (spokenText) sendAiMessage(null, spokenText);
+    else if (!$("ai-status").classList.contains("error")) setAiStatus("No speech detected.", true);
+  };
+
+  $("ai-voice-lang").addEventListener("change", () => {
+    recognition.lang = $("ai-voice-lang").value;
+  });
+  recognition.lang = $("ai-voice-lang").value;
+  updateVoiceButton();
+}
+
+function toggleVoiceInput() {
+  if (!state.aiVoice.supported || !state.aiVoice.recognition || state.aiBusy) return;
+  if (state.aiVoice.listening) {
+    state.aiVoice.recognition.stop();
+    return;
+  }
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  state.aiVoice.recognition.lang = $("ai-voice-lang").value;
+  try {
+    state.aiVoice.recognition.start();
+  } catch {
+    setAiStatus("Voice input is already starting.", true);
   }
 }
 
@@ -579,6 +690,8 @@ function wireEvents() {
   $("btn-generate-quiz").addEventListener("click", renderQuiz);
   $("ai-chat-form").addEventListener("submit", sendAiMessage);
   $("ai-reset").addEventListener("click", resetAiTutor);
+  $("ai-voice").addEventListener("click", toggleVoiceInput);
+  setupVoiceTutor();
   renderAiChat();
 }
 

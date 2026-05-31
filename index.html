@@ -148,13 +148,27 @@
                 <option value="advanced">Advanced</option>
               </select>
             </div>
+            <div class="form-group">
+              <label for="ai-voice-lang">Voice</label>
+              <select id="ai-voice-lang" class="filter-select">
+                <option value="zh-CN" selected>Mandarin</option>
+                <option value="zh-TW">Taiwan Mandarin</option>
+              </select>
+            </div>
+            <label class="ai-speak-toggle">
+              <input id="ai-speak-replies" type="checkbox" checked />
+              Read replies aloud
+            </label>
             <button id="ai-reset" type="button" class="btn btn-secondary">Reset</button>
           </div>
           <div id="ai-status" class="ai-status"></div>
           <div id="ai-chat-log" class="ai-chat-log" aria-live="polite"></div>
           <form id="ai-chat-form" class="ai-chat-form">
             <textarea id="ai-chat-input" class="ai-chat-input" rows="3" placeholder="用中文写一句话..."></textarea>
-            <button id="ai-send" type="submit" class="btn btn-primary">Send</button>
+            <div class="ai-action-stack">
+              <button id="ai-voice" type="button" class="btn btn-secondary" aria-pressed="false">Speak</button>
+              <button id="ai-send" type="submit" class="btn btn-primary">Send</button>
+            </div>
           </form>
         </div>
       </section>
