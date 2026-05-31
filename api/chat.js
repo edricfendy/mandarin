@@ -77,6 +77,7 @@ function buildInstructions(level) {
     "Put the complete answer, including any follow-up question, in row 1 only.",
     "Row 2 must cover all Mandarin text from row 1, and row 3 must translate all Mandarin text from row 1.",
     "Do not create a second Chinese/pinyin/English triplet.",
+    "Do not add blank lines between rows 1, 2, and 3.",
     "Do not label the first three rows.",
     "If the learner makes a grammar, word choice, tone, or naturalness mistake, correct it gently.",
     "If there is a mistake, add one blank line after row 3, then a short Feedback section with Correction, Why, Better reply.",

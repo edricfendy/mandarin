@@ -412,9 +412,20 @@ function formatAiMessageContent(message) {
   if (message.role !== "assistant") return escapeHtml(message.content);
 
   const lines = String(message.content ?? "").split(/\r?\n/);
+  let learningRow = 0;
   return lines
-    .map((line, index) => {
-      const rowClass = index === 0 ? "ai-row-zh" : index === 1 ? "ai-row-pinyin" : index === 2 ? "ai-row-en" : "ai-row-extra";
+    .map((line) => {
+      if (!line.trim() && learningRow < 3) return "";
+
+      const rowClass =
+        learningRow === 0
+          ? "ai-row-zh"
+          : learningRow === 1
+            ? "ai-row-pinyin"
+            : learningRow === 2
+              ? "ai-row-en"
+              : "ai-row-extra";
+      if (line.trim() && learningRow < 3) learningRow += 1;
       return `<span class="ai-reply-row ${rowClass}">${escapeHtml(line) || "&nbsp;"}</span>`;
     })
     .join("");
