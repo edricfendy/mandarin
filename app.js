@@ -35,6 +35,406 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+const PRACTICE_STATS_KEY = "mandarin-quest-stats-v1";
+const DEFAULT_PRACTICE_STATS = {
+  xp: 0,
+  answered: 0,
+  correct: 0,
+  streak: 0,
+  bestStreak: 0,
+  lastDay: "",
+  sessions: 0,
+  completed: 0,
+  seenWords: [],
+  missedWords: [],
+};
+
+function loadPracticeStats() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PRACTICE_STATS_KEY) || "{}");
+    const stats = Object.assign({}, DEFAULT_PRACTICE_STATS, saved);
+    stats.seenWords = Array.isArray(stats.seenWords) ? stats.seenWords.slice(-1500) : [];
+    stats.missedWords = Array.isArray(stats.missedWords) ? stats.missedWords.slice(-300) : [];
+    return stats;
+  } catch {
+    return Object.assign({}, DEFAULT_PRACTICE_STATS);
+  }
+}
+
+function savePracticeStats() {
+  try {
+    state.practiceStats.seenWords = state.practiceStats.seenWords.slice(-1500);
+    state.practiceStats.missedWords = state.practiceStats.missedWords.slice(-300);
+    localStorage.setItem(PRACTICE_STATS_KEY, JSON.stringify(state.practiceStats));
+  } catch {
+    // Practice still works when browser storage is unavailable.
+  }
+}
+
+state.practiceStats = loadPracticeStats();
+state.practiceDeck = [];
+state.practiceSource = [];
+state.practiceIndex = 0;
+state.practiceQuestion = null;
+state.practiceAnswered = false;
+state.practiceFinished = false;
+state.practiceMode = "mixed";
+state.practiceScore = 0;
+state.practiceSessionAnswered = 0;
+state.practiceXpStart = 0;
+state.practiceCombo = 0;
+state.practiceLastType = "";
+
+function localDayString(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return y + "-" + m + "-" + d;
+}
+
+function shiftLocalDay(day, amount) {
+  if (!day) return "";
+  const date = new Date(day + "T12:00:00");
+  date.setDate(date.getDate() + amount);
+  return localDayString(date);
+}
+
+function updatePracticeStreak() {
+  const stats = state.practiceStats;
+  const today = localDayString(new Date());
+  if (stats.lastDay === today) return;
+  stats.streak = stats.lastDay === shiftLocalDay(today, -1) ? stats.streak + 1 : 1;
+  stats.bestStreak = Math.max(stats.bestStreak || 0, stats.streak);
+  stats.lastDay = today;
+}
+
+function renderPracticeStats() {
+  const stats = state.practiceStats;
+  const accuracy = stats.answered ? Math.round((stats.correct / stats.answered) * 100) : 0;
+  const cards = [
+    ["🔥", String(stats.streak || 0), "day streak"],
+    ["✨", (stats.xp || 0).toLocaleString(), "total XP"],
+    ["📚", (stats.seenWords || []).length.toLocaleString(), "words explored"],
+    ["🎯", accuracy + "%", "overall accuracy"],
+  ];
+  $("practice-stats").innerHTML = cards.map(function (card) {
+    return '<div class="quest-stat"><span class="quest-stat-icon">' + card[0] +
+      '</span><div><strong>' + escapeHtml(card[1]) + '</strong><small>' +
+      escapeHtml(card[2]) + '</small></div></div>';
+  }).join("");
+}
+
+function shuffleList(items) {
+  const result = items.slice();
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const temp = result[i];
+    result[i] = result[j];
+    result[j] = temp;
+  }
+  return result;
+}
+
+function getPracticePool(level) {
+  const seen = new Set();
+  const all = state.vocab.filter(function (item) {
+    if (!item || !item.h || !item.e || !String(item.e).trim()) return false;
+    if (seen.has(item.h)) return false;
+    seen.add(item.h);
+    return true;
+  });
+  let pool = all;
+  if (level === "beginner") {
+    pool = all.filter(function (item) { return Number(item.v || 5) <= 3; });
+  } else if (level === "intermediate") {
+    pool = all.filter(function (item) {
+      const value = Number(item.v || 5);
+      return value >= 3 && value <= 7;
+    });
+  } else if (level === "advanced") {
+    pool = all.filter(function (item) { return Number(item.v || 5) >= 6; });
+  }
+  return pool.length >= 20 ? pool : all;
+}
+
+function buildPracticeOptions(item, type, source) {
+  const useMeaning = type === "meaning" || type === "listen";
+  const correctLabel = useMeaning ? normalize(item.e) : item.h;
+  const candidates = shuffleList(source.filter(function (candidate) {
+    if (candidate.h === item.h) return false;
+    const label = useMeaning ? normalize(candidate.e) : candidate.h;
+    return label && label !== correctLabel;
+  }));
+  const usedLabels = new Set([correctLabel]);
+  const options = [item];
+  for (const candidate of candidates) {
+    const label = useMeaning ? normalize(candidate.e) : candidate.h;
+    if (!label || usedLabels.has(label)) continue;
+    usedLabels.add(label);
+    options.push(candidate);
+    if (options.length === 4) break;
+  }
+  return shuffleList(options);
+}
+
+function choosePracticeType(item) {
+  const selected = $("practice-mode").value;
+  if (selected !== "mixed" && selected !== "review") {
+    if (selected === "cloze" && !(item.xz && String(item.xz).includes(item.h))) return "meaning";
+    return selected;
+  }
+  let types = ["meaning", "hanzi", "typing", "listen", "cloze"];
+  if (!(item.xz && String(item.xz).includes(item.h))) types = types.filter(function (type) { return type !== "cloze"; });
+  if (types.length > 1) types = types.filter(function (type) { return type !== state.practiceLastType; });
+  return types[Math.floor(Math.random() * types.length)] || "meaning";
+}
+
+function startPracticeQuest() {
+  if (!state.vocab.length) return;
+  const level = $("practice-level").value;
+  const count = Number($("practice-count").value || 10);
+  const all = getPracticePool(level);
+  const mode = $("practice-mode").value;
+  let focusPool = all;
+
+  if (mode === "review") {
+    const missedSet = new Set(state.practiceStats.missedWords);
+    const missed = all.filter(function (item) { return missedSet.has(item.h); });
+    if (missed.length) focusPool = missed;
+  }
+
+  const seenSet = new Set(state.practiceStats.seenWords);
+  const newWords = shuffleList(focusPool.filter(function (item) { return !seenSet.has(item.h); }));
+  const familiarWords = shuffleList(focusPool.filter(function (item) { return seenSet.has(item.h); }));
+  const orderedPool = newWords.concat(familiarWords);
+  state.practiceDeck = orderedPool.slice(0, Math.min(count, orderedPool.length));
+  if (!state.practiceDeck.length) state.practiceDeck = shuffleList(all).slice(0, count);
+  state.practiceSource = all;
+  state.practiceIndex = 0;
+  state.practiceScore = 0;
+  state.practiceSessionAnswered = 0;
+  state.practiceXpStart = state.practiceStats.xp || 0;
+  state.practiceCombo = 0;
+  state.practiceLastType = "";
+  state.practiceAnswered = false;
+  state.practiceFinished = false;
+  state.practiceMode = mode === "review" ? "mixed" : mode;
+  state.practiceStats.sessions = (state.practiceStats.sessions || 0) + 1;
+  savePracticeStats();
+  renderPracticeStats();
+  renderPracticeQuestion();
+}
+
+function practiceOptionMarkup(item, type) {
+  const useMeaning = type === "meaning" || type === "listen";
+  const label = useMeaning
+    ? '<span class="practice-option-meaning">' + escapeHtml(item.e) + '</span>'
+    : '<span class="practice-option-hanzi">' + escapeHtml(item.h) + '</span><small>' + escapeHtml(item.p || "") + '</small>';
+  return '<button type="button" class="practice-option" data-practice-answer="' +
+    escapeHtml(item.h) + '">' + label + '</button>';
+}
+
+function renderPracticeQuestion() {
+  if (state.practiceIndex >= state.practiceDeck.length) {
+    finishPracticeQuest();
+    return;
+  }
+
+  const item = state.practiceDeck[state.practiceIndex];
+  const type = choosePracticeType(item);
+  state.practiceLastType = type;
+  const question = {
+    item: item,
+    type: type,
+    options: type === "typing" ? [] : buildPracticeOptions(item, type, state.practiceSource),
+  };
+  state.practiceQuestion = question;
+  state.practiceAnswered = false;
+
+  let label = "MEANING MATCH";
+  let title = "What does this mean?";
+  let prompt = '<div class="practice-prompt-hanzi">' + escapeHtml(item.h) + '</div><div class="practice-prompt-pinyin">' + escapeHtml(item.p || "") + '</div>';
+  let audio = "";
+  let typing = "";
+  if (type === "hanzi") {
+    label = "ENGLISH → MANDARIN";
+    title = "How would you say this in Chinese?";
+    prompt = '<div class="practice-prompt-english">' + escapeHtml(item.e) + '</div><div class="practice-prompt-note">Choose the matching characters.</div>';
+  } else if (type === "typing") {
+    label = "YOUR TURN TO TYPE";
+    title = "Write the Mandarin word";
+    prompt = '<div class="practice-prompt-english">' + escapeHtml(item.e) + '</div><div class="practice-prompt-note">Type Hanzi or pinyin with or without tone marks.</div>';
+    typing = '<form id="practice-answer-form" class="practice-answer-form"><input id="practice-typed-answer" class="practice-typed-answer" type="text" autocomplete="off" placeholder="Type 中文 or pinyin…" aria-label="Your Mandarin answer" required><button type="submit" class="btn btn-primary">Check answer</button></form>';
+  } else if (type === "listen") {
+    label = "LISTEN & CHOOSE";
+    title = "What did you hear?";
+    prompt = '<div class="practice-audio-prompt"><span aria-hidden="true">🎧</span><span>Listen to the Mandarin, then choose its meaning.</span></div>';
+    audio = '<button type="button" id="practice-play-audio" class="btn btn-secondary practice-audio-btn">🔊 Play Mandarin</button><span id="practice-audio-status" class="practice-audio-status"></span>';
+  } else if (type === "cloze") {
+    label = "USE THE CONTEXT";
+    title = "Complete the example sentence";
+    prompt = '<div class="practice-cloze-sentence">' + escapeHtml(String(item.xz).replace(item.h, "＿＿＿")) + '</div><div class="practice-prompt-note">Choose the word that fits the blank.</div>';
+  }
+
+  const progress = Math.round((state.practiceIndex / state.practiceDeck.length) * 100);
+  const useMeaning = type === "meaning" || type === "listen";
+  const options = question.options.map(function (option) {
+    return practiceOptionMarkup(option, useMeaning ? "meaning" : type);
+  }).join("");
+  const modeName = {
+    meaning: "Chinese → English",
+    hanzi: "English → Chinese",
+    typing: "Typing challenge",
+    listen: "Listening challenge",
+    cloze: "Sentence challenge",
+  }[type] || "Practice";
+
+  $("practice-game").innerHTML =
+    '<div class="practice-progress-top"><span>QUESTION ' + (state.practiceIndex + 1) + ' OF ' + state.practiceDeck.length +
+    '</span><span>🔥 ' + (state.practiceStats.streak || 0) + ' day streak</span></div>' +
+    '<div class="practice-progress-track"><span style="width:' + progress + '%"></span></div>' +
+    '<div class="practice-question-card">' +
+      '<div class="practice-question-meta"><span class="practice-mode-tag">' + label + '</span><span class="practice-mode-name">' + modeName + '</span></div>' +
+      '<h3>' + title + '</h3>' +
+      '<div class="practice-prompt">' + prompt + '</div>' +
+      audio +
+      (type === "typing" ? typing : '<div class="practice-options">' + options + '</div>') +
+      '<div id="practice-feedback" class="practice-feedback" hidden></div>' +
+      '<div class="practice-question-footer"><span>One word at a time. You’re doing fine.</span><button type="button" id="practice-skip" class="practice-skip">Skip for now →</button></div>' +
+    '</div>';
+
+  $("practice-game").querySelectorAll("[data-practice-answer]").forEach(function (button) {
+    button.addEventListener("click", function () { submitPracticeAnswer(button.dataset.practiceAnswer); });
+  });
+  const answerForm = $("practice-answer-form");
+  if (answerForm) {
+    answerForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      const input = $("practice-typed-answer");
+      if (input && input.value.trim()) submitPracticeAnswer(input.value);
+    });
+  }
+  const playButton = $("practice-play-audio");
+  if (playButton) playButton.addEventListener("click", function () {
+    const status = $("practice-audio-status");
+    if (!("speechSynthesis" in window)) {
+      status.textContent = "Audio is not available in this browser.";
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(item.h);
+    utterance.lang = "zh-CN";
+    utterance.rate = 0.78;
+    window.speechSynthesis.speak(utterance);
+    status.textContent = "Listen closely to the tones.";
+  });
+  $("practice-skip").addEventListener("click", function () {
+    state.practiceIndex += 1;
+    renderPracticeQuestion();
+  });
+}
+
+function submitPracticeAnswer(answer) {
+  if (!state.practiceQuestion || state.practiceAnswered) return;
+  const item = state.practiceQuestion.item;
+  const typed = normalize(answer);
+  const correct = [item.h, item.p, item.pk].some(function (value) {
+    return value && normalize(value) === typed;
+  });
+  completePracticeAnswer(correct);
+}
+
+function completePracticeAnswer(correct) {
+  if (state.practiceAnswered || !state.practiceQuestion) return;
+  state.practiceAnswered = true;
+  const question = state.practiceQuestion;
+  const item = question.item;
+  const stats = state.practiceStats;
+  updatePracticeStreak();
+  stats.answered += 1;
+  state.practiceSessionAnswered += 1;
+  let earned = 2;
+  if (correct) {
+    state.practiceScore += 1;
+    stats.correct += 1;
+    state.practiceCombo += 1;
+    earned = 10 + Math.min(5, (state.practiceCombo - 1) * 2);
+    stats.missedWords = stats.missedWords.filter(function (word) { return word !== item.h; });
+  } else {
+    state.practiceCombo = 0;
+    if (!stats.missedWords.includes(item.h)) stats.missedWords.push(item.h);
+  }
+  stats.xp = (stats.xp || 0) + earned;
+  if (!stats.seenWords.includes(item.h)) stats.seenWords.push(item.h);
+  savePracticeStats();
+  renderPracticeStats();
+
+  const feedback = $("practice-feedback");
+  const example = item.xz
+    ? '<div class="practice-feedback-example"><strong>In context</strong><div class="practice-example-zh">' + escapeHtml(item.xz) +
+      '</div><div class="practice-example-en">' + escapeHtml(item.xe || "") + '</div></div>'
+    : "";
+  feedback.hidden = false;
+  feedback.className = "practice-feedback " + (correct ? "is-correct" : "is-incorrect");
+  feedback.innerHTML =
+    '<div class="practice-feedback-heading"><strong>' + (correct ? "太棒了！You got it!" : "Good effort — this is how it sticks.") +
+    '</strong><span>+' + earned + ' XP</span></div>' +
+    '<div class="practice-correct-answer"><span class="practice-answer-hanzi">' + escapeHtml(item.h) +
+    '</span><span class="practice-answer-pinyin">' + escapeHtml(item.p || "") +
+    '</span><span class="practice-answer-meaning">' + escapeHtml(item.e) + '</span></div>' +
+    (correct ? '<p>Nice work. Keep the momentum going!</p>' : '<p>No stress—seeing the answer now helps you remember it next time.</p>') +
+    example +
+    '<button type="button" id="practice-next" class="btn btn-primary">' +
+    (state.practiceIndex === state.practiceDeck.length - 1 ? "Finish quest ✓" : "Next question →") + '</button>';
+
+  $("practice-game").querySelectorAll("[data-practice-answer]").forEach(function (button) {
+    button.disabled = true;
+    if (button.dataset.practiceAnswer === item.h) button.classList.add("is-correct");
+  });
+  if (question.type === "typing") {
+    const input = $("practice-typed-answer");
+    if (input) input.disabled = true;
+    const form = $("practice-answer-form");
+    if (form) form.querySelector("button").disabled = true;
+  } else {
+  }
+  $("practice-next").addEventListener("click", function () {
+    state.practiceIndex += 1;
+    renderPracticeQuestion();
+  });
+}
+
+function finishPracticeQuest() {
+  if (state.practiceFinished) return;
+  state.practiceFinished = true;
+  const stats = state.practiceStats;
+  stats.completed = (stats.completed || 0) + 1;
+  savePracticeStats();
+  renderPracticeStats();
+  const total = state.practiceDeck.length;
+  const accuracy = state.practiceSessionAnswered
+    ? Math.round((state.practiceScore / state.practiceSessionAnswered) * 100)
+    : 0;
+  const xpEarned = (stats.xp || 0) - state.practiceXpStart;
+  let message = accuracy >= 80 ? "你做得很好！You’re building real momentum." :
+    accuracy >= 50 ? "Good progress. A little review will make it stronger." :
+    "Showing up is a win. Try the tricky words again when you’re ready.";
+  $("practice-game").innerHTML =
+    '<div class="practice-summary-card"><div class="practice-summary-emoji">' + (accuracy >= 80 ? "🏆" : accuracy >= 50 ? "🌟" : "🌱") +
+    '</div><div class="practice-mode-tag">QUEST COMPLETE</div><h3>You showed up. That counts.</h3><p>' + message + '</p>' +
+    '<div class="practice-summary-stats"><div><strong>' + state.practiceScore + '/' + total + '</strong><small>correct</small></div>' +
+    '<div><strong>' + accuracy + '%</strong><small>accuracy</small></div>' +
+    '<div><strong>+' + xpEarned + '</strong><small>XP earned</small></div></div>' +
+    '<div class="practice-summary-actions"><button type="button" id="practice-again" class="btn btn-primary">Another round ↗</button>' +
+    '<button type="button" id="practice-review" class="btn btn-secondary">Review tricky words 🔁</button></div></div>';
+  $("practice-again").addEventListener("click", startPracticeQuest);
+  $("practice-review").addEventListener("click", function () {
+    $("practice-mode").value = "review";
+    startPracticeQuest();
+  });
+}
+
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -555,6 +955,7 @@ async function sendAiMessage(event, textOverride = "") {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         level: $("ai-level").value,
+        topic: $("ai-topic").value,
         inputMode,
         messages: state.aiMessages.slice(-12),
       }),
@@ -792,6 +1193,8 @@ function wireEvents() {
     });
   });
 
+  $("practice-start").addEventListener("click", startPracticeQuest);
+  $("practice-start-inline").addEventListener("click", startPracticeQuest);
   $("quiz-count").addEventListener("input", () => ($("quiz-count-display").textContent = $("quiz-count").value));
   $("btn-generate-quiz").addEventListener("click", renderQuiz);
   $("ai-chat-form").addEventListener("submit", sendAiMessage);
@@ -809,6 +1212,7 @@ async function init() {
     state.vocab = await response.json();
     state.filtered = state.vocab;
     applyFilters();
+    renderPracticeStats();
     renderQuiz();
     $("app-loader").classList.add("hidden");
     $("app").classList.remove("hidden");
