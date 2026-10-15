@@ -716,15 +716,25 @@ function renderConversations(nextScenario) {
   const selected = conversations[state.convoIndex];
   $("convo-ref").innerHTML =
     '<div class="convo-random-toolbar"><span>SCENARIO ' + (state.convoIndex + 1) + ' / ' + conversations.length +
-    ' · PRACTISE OUT LOUD</span><button type="button" id="convo-next-scenario" class="btn btn-secondary">🎲 New scenario</button></div>' +
+    ' · PRACTISE OUT LOUD</span><div class="convo-toolbar-actions"><button type="button" id="convo-toggle-english" class="btn btn-secondary">Hide English</button><button type="button" id="convo-next-scenario" class="btn btn-secondary">🎲 New scenario</button></div></div>' +
     '<div class="convo-block"><h3 class="convo-block-title">' + escapeHtml(selected[0]) + '</h3>' +
     selected[1].map(function (line) {
-      return '<div class="dcx-wrap"><div class="dcx-speaker">' + escapeHtml(line[0]) + '</div>' +
+      return '<div class="dcx-wrap"><div class="dcx-line-toolbar"><div class="dcx-speaker">' + escapeHtml(line[0]) + '</div>' +
+        '<button type="button" class="btn btn-secondary convo-speak" data-speak="' + escapeHtml(line[1]) + '" aria-label="Play Mandarin audio" title="Listen to this line">🔊</button></div>' +
         '<div class="dcx-token-hanzi">' + escapeHtml(line[1]) + '</div>' +
         '<div class="dcx-token-pinyin">' + escapeHtml(line[2]) + '</div>' +
-        '<div class="dcx-en">' + escapeHtml(line[3]) + '</div></div>';
+        '<div class="dcx-en convo-translation">' + escapeHtml(line[3]) + '</div></div>';
     }).join("") + '</div>';
   $("convo-next-scenario").addEventListener("click", function () { renderConversations(true); });
+  $("convo-toggle-english").addEventListener("click", function () {
+    const translations = $("convo-ref").querySelectorAll(".convo-translation");
+    const shouldHide = translations.length && !translations[0].classList.contains("translation-hidden");
+    translations.forEach(function (line) { line.classList.toggle("translation-hidden", shouldHide); });
+    $("convo-toggle-english").textContent = shouldHide ? "Show English" : "Hide English";
+  });
+  $("convo-ref").querySelectorAll(".convo-speak").forEach(function (button) {
+    button.addEventListener("click", function () { speakMandarinText(button.dataset.speak); });
+  });
   renderDragPractice();
 }
 
@@ -968,6 +978,19 @@ function renderAiChat() {
     })
     .join("");
   $("ai-chat-log").scrollTop = $("ai-chat-log").scrollHeight;
+}
+
+
+function speakMandarinText(text, rate, lang) {
+  if (!text || !("speechSynthesis" in window)) return;
+  const voiceLang = lang || "zh-CN";
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = voiceLang;
+  utterance.rate = rate || 0.84;
+  const voice = pickMandarinVoice(voiceLang);
+  if (voice) utterance.voice = voice;
+  window.speechSynthesis.speak(utterance);
 }
 
 function pickMandarinVoice(lang) {
