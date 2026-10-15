@@ -659,92 +659,217 @@ function renderStrokeChar(char) {
     .join("")}</div>`;
 }
 
-function renderConversations() {
+
+state.convoIndex = 0;
+
+function renderConversations(nextScenario) {
   const conversations = [
-    ["Work Conversation", [
-      ["A", "你现在方便聊两分钟吗？", "Nǐ xiànzài fāngbiàn liáo liǎng fēnzhōng ma?", "Are you free to chat for two minutes right now?"],
+    ["Getting to Know Someone", [
+      ["A", "你好！你叫什么名字？", "Nǐ hǎo! Nǐ jiào shénme míngzi?", "Hi! What's your name?"],
+      ["B", "我叫安娜。你呢？", "Wǒ jiào Ānnà. Nǐ ne?", "My name is Anna. And you?"],
+      ["A", "我叫大卫。认识你很高兴！", "Wǒ jiào Dàwèi. Rènshi nǐ hěn gāoxìng!", "I'm David. Nice to meet you!"]
+    ]],
+    ["Ordering at a Café", [
+      ["A", "你好，我想要一杯拿铁。", "Nǐ hǎo, wǒ xiǎng yào yì bēi nátiě.", "Hello, I'd like a latte."],
+      ["B", "可以。需要加糖吗？", "Kěyǐ. Xūyào jiā táng ma?", "Sure. Would you like sugar?"],
+      ["A", "不用了，谢谢。", "Bú yòng le, xièxie.", "No, thank you."]
+    ]],
+    ["Choosing Food", [
+      ["A", "这个菜辣吗？", "Zhège cài là ma?", "Is this dish spicy?"],
+      ["B", "有一点儿。如果你不吃辣，可以试试这个。", "Yǒu yìdiǎnr. Rúguǒ nǐ bù chī là, kěyǐ shìshi zhège.", "A little. If you don't eat spicy food, you can try this."],
+      ["A", "好，那我点这个。", "Hǎo, nà wǒ diǎn zhège.", "Okay, I'll order this one."]
+    ]],
+    ["Shopping", [
+      ["A", "你好，这件衣服多少钱？", "Nǐ hǎo, zhè jiàn yīfu duōshao qián?", "Hello, how much is this piece of clothing?"],
+      ["B", "二百块。", "Èrbǎi kuài.", "Two hundred yuan."],
+      ["A", "可以便宜一点儿吗？", "Kěyǐ piányi yìdiǎnr ma?", "Could you make it a little cheaper?"]
+    ]],
+    ["Finding the Subway", [
+      ["A", "请问，最近的地铁站怎么走？", "Qǐngwèn, zuìjìn de dìtiězhàn zěnme zǒu?", "Excuse me, how do I get to the nearest subway station?"],
+      ["B", "一直往前走，在第二个路口左转。", "Yìzhí wǎng qián zǒu, zài dì èr ge lùkǒu zuǒ zhuǎn.", "Go straight and turn left at the second intersection."],
+      ["A", "明白了，谢谢你！", "Míngbai le, xièxie nǐ!", "Got it. Thank you!"]
+    ]],
+    ["Weekend Plans", [
+      ["A", "你周末有什么安排？", "Nǐ zhōumò yǒu shénme ānpái?", "What are your plans for the weekend?"],
+      ["B", "我打算跟朋友去爬山。", "Wǒ dǎsuàn gēn péngyou qù páshān.", "I plan to go hiking with friends."],
+      ["A", "听起来不错！", "Tīng qǐlái bú cuò!", "That sounds great!"]
+    ]],
+    ["At Work", [
+      ["A", "你现在方便聊两分钟吗？", "Nǐ xiànzài fāngbiàn liáo liǎng fēnzhōng ma?", "Are you free to talk for two minutes?"],
       ["B", "可以，我刚开完会。", "Kěyǐ, wǒ gāng kāiwán huì.", "Sure, I just finished a meeting."],
-      ["A", "客户希望我们把截止日期提前到周五。", "Kèhù xīwàng wǒmen bǎ jiézhǐ rìqī tíqián dào zhōuwǔ.", "The client wants us to move the deadline up to Friday."],
+      ["A", "客户希望我们把截止日期提前到周五。", "Kèhù xīwàng wǒmen bǎ jiézhǐ rìqī tíqián dào zhōuwǔ.", "The client wants us to move the deadline up to Friday."]
     ]],
-    ["Commute Conversation", [
-      ["A", "今天路上堵不堵？", "Jīntiān lùshang dǔ bu dǔ?", "Is traffic bad today?"],
-      ["B", "高架有点慢，我改坐地铁了。", "Gāojià yǒudiǎn màn, wǒ gǎi zuò dìtiě le.", "The elevated road is slow, so I switched to the subway."],
-      ["A", "那我们在公司楼下咖啡店见吧。", "Nà wǒmen zài gōngsī lóuxià kāfēidiàn jiàn ba.", "Then let's meet at the coffee shop under the office building."],
-    ]],
+    ["Talking About Hobbies", [
+      ["A", "你平时喜欢做什么？", "Nǐ píngshí xǐhuan zuò shénme?", "What do you like to do in your free time?"],
+      ["B", "我喜欢看电影，也喜欢学中文。", "Wǒ xǐhuan kàn diànyǐng, yě xǐhuan xué Zhōngwén.", "I like watching movies and learning Chinese."],
+      ["A", "太好了！我们可以一起练习。", "Tài hǎo le! Wǒmen kěyǐ yìqǐ liànxí.", "Great! We can practise together."]
+    ]]
   ];
 
-  $("convo-ref").innerHTML = conversations
-    .map(([title, lines]) => `<div class="convo-block"><h3 class="convo-block-title">${title}</h3>${lines
-      .map(([role, zh, py, en]) => `<div class="dcx-wrap">
-        <div class="dcx-speaker">${role}</div>
-        <div class="dcx-token-hanzi">${escapeHtml(zh)}</div>
-        <div class="dcx-token-pinyin">${escapeHtml(py)}</div>
-        <div class="dcx-en">${escapeHtml(en)}</div>
-      </div>`)
-      .join("")}</div>`)
-    .join("");
-
+  if (typeof state.convoIndex !== "number") state.convoIndex = 0;
+  if (nextScenario) {
+    let next = Math.floor(Math.random() * conversations.length);
+    if (conversations.length > 1 && next === state.convoIndex) next = (next + 1) % conversations.length;
+    state.convoIndex = next;
+  }
+  state.convoIndex = state.convoIndex % conversations.length;
+  const selected = conversations[state.convoIndex];
+  $("convo-ref").innerHTML =
+    '<div class="convo-random-toolbar"><span>SCENARIO ' + (state.convoIndex + 1) + ' / ' + conversations.length +
+    ' · PRACTISE OUT LOUD</span><button type="button" id="convo-next-scenario" class="btn btn-secondary">🎲 New scenario</button></div>' +
+    '<div class="convo-block"><h3 class="convo-block-title">' + escapeHtml(selected[0]) + '</h3>' +
+    selected[1].map(function (line) {
+      return '<div class="dcx-wrap"><div class="dcx-speaker">' + escapeHtml(line[0]) + '</div>' +
+        '<div class="dcx-token-hanzi">' + escapeHtml(line[1]) + '</div>' +
+        '<div class="dcx-token-pinyin">' + escapeHtml(line[2]) + '</div>' +
+        '<div class="dcx-en">' + escapeHtml(line[3]) + '</div></div>';
+    }).join("") + '</div>';
+  $("convo-next-scenario").addEventListener("click", function () { renderConversations(true); });
   renderDragPractice();
 }
 
 function renderDragPractice() {
-  const rows = [
-    ["你现在 ___ 吗？", "有空", "Are you free now?"],
-    ["我想 ___ 一下这个计划。", "问", "I want to ask about this plan."],
-    ["明天 ___ 去吗？", "一起", "Do you want to go together tomorrow?"],
-    ["我们八点在 ___ 见。", "地铁站", "Let's meet at the subway station at eight."],
+  const practiceSets = [
+    [
+      ["你现在 ___ 吗？", "有空", "Are you free now?"],
+      ["我想 ___ 一下这个计划。", "问", "I want to ask about this plan."],
+      ["明天 ___ 去吗？", "一起", "Do you want to go together tomorrow?"],
+      ["我们八点在 ___ 见。", "地铁站", "Let's meet at the subway station at eight."]
+    ],
+    [
+      ["你好，我想 ___ 一杯咖啡。", "要", "Hello, I'd like to order a coffee."],
+      ["这个菜有一点儿 ___。", "辣", "This dish is a little spicy."],
+      ["请给我一杯 ___。", "水", "Please give me a glass of water."],
+      ["味道很好，谢谢你的 ___。", "推荐", "It tastes great. Thanks for the recommendation."]
+    ],
+    [
+      ["这件衣服多少钱？可以 ___ 一点儿吗？", "便宜", "How much is this? Could it be a little cheaper?"],
+      ["我可以 ___ 一下吗？", "试", "Can I try it on?"],
+      ["你有大一点儿的 ___ 吗？", "尺寸", "Do you have a larger size?"],
+      ["我只是看看，___。", "谢谢", "I'm just looking, thank you."]
+    ],
+    [
+      ["请问，地铁站怎么 ___？", "走", "Excuse me, how do I get to the subway station?"],
+      ["一直往前走，然后 ___。", "左转", "Go straight, then turn left."],
+      ["请问，这里可以 ___ 吗？", "打车", "Excuse me, can I get a taxi here?"],
+      ["到机场要多长 ___？", "时间", "How long does it take to get to the airport?"]
+    ],
+    [
+      ["你周末有什么 ___？", "安排", "What are your plans for the weekend?"],
+      ["我打算跟朋友去 ___。", "爬山", "I plan to go hiking with friends."],
+      ["听起来很 ___！", "不错", "That sounds pretty good!"],
+      ["我们下次 ___ 一起吃饭吧。", "可以", "We can have a meal together next time."]
+    ],
+    [
+      ["我今天有点儿 ___，想早点休息。", "累", "I'm a little tired today and want to rest early."],
+      ["你平时喜欢做 ___？", "什么", "What do you like to do in your free time?"],
+      ["我正在 ___ 中文。", "学习", "I'm studying Chinese."],
+      ["你说得很 ___，继续加油！", "好", "You're speaking well. Keep it up!"]
+    ]
   ];
-  const bank = rows.map((x) => x[1]).sort(() => 0.5 - Math.random());
-  $("convo-drag").innerHTML = makeDragDrop("daily-drag", "Daily Practice", rows, bank);
-  wireDragDrop("daily-drag", rows.map((x) => x[1]));
+  const rows = practiceSets[Math.floor(Math.random() * practiceSets.length)];
+  const bank = shuffleList(rows.map(function (row) { return row[1]; }));
+  $("convo-drag").innerHTML = makeDragDrop("daily-drag", "Fresh mini challenge", rows, bank);
+  wireDragDrop("daily-drag");
 }
 
 function makeDragDrop(id, title, rows, bank) {
   return `<div class="dd-wrap" id="${id}">
-    <div class="dd-toolbar"><strong>${escapeHtml(title)}</strong><button class="btn btn-secondary dd-check">Check</button><span class="dd-tip">Drag each token into a blank.</span></div>
+    <div class="dd-toolbar"><strong>${escapeHtml(title)}</strong><button class="btn btn-secondary dd-check">Check</button><span class="dd-tip">Drag a word, or tap it and then tap a blank.</span></div>
     <div class="dd-sentences">${rows
       .map(([text, answer, hint], idx) => `<div class="dd-row">
         <div class="dd-hint-english">${escapeHtml(hint)}</div>
-        <div class="dd-line"><span class="dd-line-no">${idx + 1}.</span>${escapeHtml(text).replace("___", `<span class="dd-slot" data-answer="${escapeHtml(answer)}"></span>`)}</div>
+        <div class="dd-line"><span class="dd-line-no">${idx + 1}.</span>${escapeHtml(text).replace("___", `<span class="dd-slot" data-answer="${escapeHtml(answer)}" tabindex="0" role="button" aria-label="Blank for answer ${idx + 1}"></span>`)}</div>
       </div>`)
       .join("")}</div>
     <div class="dd-bank-label">Word Bank</div>
-    <div class="dd-bank">${bank.map((word) => `<span class="dd-token" draggable="true">${escapeHtml(word)}</span>`).join("")}</div>
+    <div class="dd-bank">${bank.map((word) => `<span class="dd-token" draggable="true" tabindex="0" role="button" aria-pressed="false" title="Tap to select">${escapeHtml(word)}</span>`).join("")}</div>
     <div class="dd-result"></div>
   </div>`;
 }
 
+
 function wireDragDrop(id) {
   const root = $(id);
+  const bank = root.querySelector(".dd-bank");
   let dragged = null;
-  root.querySelectorAll(".dd-token").forEach((token) => {
-    token.addEventListener("dragstart", () => {
-      dragged = token;
+  let selectedToken = null;
+
+  function clearSelected() {
+    if (selectedToken) {
+      selectedToken.classList.remove("selected");
+      selectedToken.setAttribute("aria-pressed", "false");
+    }
+    selectedToken = null;
+  }
+
+  function placeToken(slot, token) {
+    if (!token) return;
+    const existing = slot.querySelector(".dd-token");
+    if (existing && existing !== token) bank.appendChild(existing);
+    slot.classList.remove("correct", "wrong", "over");
+    slot.replaceChildren(token);
+    clearSelected();
+  }
+
+  root.querySelectorAll(".dd-token").forEach(function (token) {
+    token.addEventListener("dragstart", function () { dragged = token; });
+    token.addEventListener("dragend", function () { dragged = null; });
+    token.addEventListener("click", function (event) {
+      event.stopPropagation();
+      const oldParent = token.parentElement;
+      if (oldParent && oldParent.classList.contains("dd-slot")) {
+        bank.appendChild(token);
+        oldParent.classList.remove("correct", "wrong");
+        clearSelected();
+        return;
+      }
+      clearSelected();
+      selectedToken = token;
+      token.classList.add("selected");
+      token.setAttribute("aria-pressed", "true");
+    });
+    token.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        token.click();
+      }
     });
   });
-  root.querySelectorAll(".dd-slot").forEach((slot) => {
-    slot.addEventListener("dragover", (event) => {
+
+  root.querySelectorAll(".dd-slot").forEach(function (slot) {
+    slot.addEventListener("dragover", function (event) {
       event.preventDefault();
       slot.classList.add("over");
     });
-    slot.addEventListener("dragleave", () => slot.classList.remove("over"));
-    slot.addEventListener("drop", (event) => {
+    slot.addEventListener("dragleave", function () { slot.classList.remove("over"); });
+    slot.addEventListener("drop", function (event) {
       event.preventDefault();
-      slot.classList.remove("over", "correct", "wrong");
-      if (dragged) slot.replaceChildren(dragged);
+      if (dragged) placeToken(slot, dragged);
+    });
+    slot.addEventListener("click", function () {
+      if (selectedToken) placeToken(slot, selectedToken);
+    });
+    slot.addEventListener("keydown", function (event) {
+      if ((event.key === "Enter" || event.key === " ") && selectedToken) {
+        event.preventDefault();
+        placeToken(slot, selectedToken);
+      }
     });
   });
-  root.querySelector(".dd-check").addEventListener("click", () => {
+
+  root.querySelector(".dd-check").addEventListener("click", function () {
     let correct = 0;
-    const slots = [...root.querySelectorAll(".dd-slot")];
-    slots.forEach((slot) => {
-      const text = slot.textContent.trim();
+    const slots = Array.from(root.querySelectorAll(".dd-slot"));
+    slots.forEach(function (slot) {
+      const token = slot.querySelector(".dd-token");
+      const text = token ? token.textContent.trim() : "";
       const ok = text === slot.dataset.answer;
       slot.classList.toggle("correct", ok);
       slot.classList.toggle("wrong", !ok);
       if (ok) correct += 1;
     });
-    root.querySelector(".dd-result").textContent = `${correct}/${slots.length} correct`;
+    root.querySelector(".dd-result").textContent = correct + "/" + slots.length + " correct";
   });
 }
 
@@ -761,7 +886,7 @@ function renderQuiz() {
     $("quiz-area").innerHTML = `<div class="translation-form">${items
       .map((item, idx) => `<div class="tq-item">
         <div class="tq-prompt">${idx + 1}. ${escapeHtml(item.h)} ${prompt === "hanzi_pinyin" ? `<span class="col-pinyin">${escapeHtml(item.p)}</span>` : ""}</div>
-        <div class="tq-hint">${escapeHtml(item.e)}</div>
+        <div class="tq-hint">Write the English meaning from memory. The answer stays hidden until you check.</div>
         <input class="tq-input" data-answer="${escapeHtml(item.e)}" placeholder="Type the English meaning" />
         <div class="tq-result"></div>
       </div>`)
