@@ -66,15 +66,28 @@ function sanitizeMessages(messages) {
     }));
 }
 
-function buildInstructions(level, inputMode) {
+function buildInstructions(level, inputMode, topic) {
   const inputModeInstruction =
     inputMode === "speech"
       ? "The learner's latest message came from browser speech-to-text. You cannot hear raw audio, but if a word seems wrong in context, treat it as a possible pronunciation or recognition issue and suggest the intended phrase with pinyin."
       : "The learner's latest message was typed. Do not include Pronunciation feedback unless the learner typed pinyin/romanization or explicitly asks about pronunciation; the pinyin row already provides pronunciation.";
 
+  const topicInstructions = {
+    surprise: "Choose a fresh, useful everyday scenario for this turn and vary it naturally across the conversation. Avoid repeating the same scenario or opening.",
+    daily: "Focus on everyday life: greetings, routines, plans, home, and simple errands.",
+    food: "Focus on ordering food, cafés, restaurants, flavors, preferences, and polite requests.",
+    work: "Focus on work and study: meetings, colleagues, deadlines, classes, and asking for clarification.",
+    travel: "Focus on travel and transport: directions, taxis, trains, hotels, tickets, and getting around.",
+    friends: "Focus on natural small talk with friends: hobbies, weekends, feelings, invitations, and follow-up questions.",
+    shopping: "Focus on shopping: prices, sizes, colors, comparisons, returns, and polite bargaining where appropriate.",
+    culture: "Focus on Chinese culture and customs, festivals, food traditions, and everyday cultural context without stereotyping."
+  };
+  const topicInstruction = topicInstructions[topic] || topicInstructions.surprise;
+
   return [
-    "You are a Mandarin Chinese conversation tutor.",
+    "You are a warm, patient, practical Mandarin Chinese conversation tutor.",
     `The learner level is ${level}.`,
+    topicInstruction,
     inputModeInstruction,
     "Every reply must begin with exactly three rows.",
     "Row 1: a natural Mandarin Chinese reply in simplified Chinese.",
@@ -85,8 +98,11 @@ function buildInstructions(level, inputMode) {
     "Do not create a second Chinese/pinyin/English triplet.",
     "Do not add blank lines between rows 1, 2, and 3.",
     "Do not label the first three rows.",
-    "Act like a patient teacher: evaluate the learner's latest message before continuing.",
+    "Act like a patient teacher: respond to the meaning of the learner's latest message before continuing.",
     "Check grammar, word order, measure words, particles, word choice, tone/register, context fit, naturalness, pinyin, tones, and pronunciation clues.",
+    "Keep the interaction lively and non-repetitive. Do not begin every reply with the same greeting or praise, and do not say the learner's sentence is natural every time.",
+    "Vary your follow-up questions and use the conversation history. Do not restart a topic that the learner has already answered; build on their last response.",
+    "Use mostly familiar, level-appropriate language and introduce at most one useful new word or phrase in a turn. Keep the learner speaking with short, answerable questions.",
     "For speech input, you only receive text transcripts; correct pronunciation only when the transcript or typed pinyin reveals the issue.",
     "For Pronunciation feedback, use tone-marked pinyin copied from row 2; do not invent tone numbers, and omit Pronunciation if you are not certain.",
     "If anything is wrong or unnatural, add one blank line after row 3, then a short Feedback section.",
@@ -202,6 +218,7 @@ module.exports = async function handler(req, res) {
   const body = parseBody(req);
   const level = ["beginner", "intermediate", "advanced"].includes(body.level) ? body.level : "intermediate";
   const inputMode = ["typed", "speech"].includes(body.inputMode) ? body.inputMode : "typed";
+  const topic = ["surprise", "daily", "food", "work", "travel", "friends", "shopping", "culture"].includes(body.topic) ? body.topic : "surprise";
   const messages = sanitizeMessages(body.messages);
   const latest = messages[messages.length - 1];
 
@@ -209,7 +226,7 @@ module.exports = async function handler(req, res) {
     return sendJson(res, 400, { error: "Send a Mandarin practice message first." });
   }
 
-  const instructions = buildInstructions(level, inputMode);
+  const instructions = buildInstructions(level, inputMode, topic);
   const model = providerModel(providerName, config);
   const request =
     config.mode === "responses"
