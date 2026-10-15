@@ -73,22 +73,86 @@
         <button id="sidebar-toggle" class="sidebar-toggle" aria-label="Open filters">☰</button>
         <div class="app-title-block">
           <h1 class="app-title">Mandarin Proficiency Trainer</h1>
-          <p class="app-subtitle">Vocabulary explorer · Stroke order · Daily dialogue · Quiz · Cue cards</p>
+          <p class="app-subtitle">Daily quests · Real-life Mandarin · Vocabulary · Stroke order · AI conversation</p>
         </div>
       </header>
 
       <!-- TABS -->
       <nav class="tab-bar" id="tab-bar">
-        <button class="tab-btn active" data-tab="vocab">Vocabulary Explorer</button>
-        <button class="tab-btn" data-tab="stroke">Stroke Order</button>
+        <button class="tab-btn active" data-tab="practice">Daily Quest</button>
+        <button class="tab-btn" data-tab="vocab">Vocabulary Explorer</button>
         <button class="tab-btn" data-tab="convo">Daily Conversation</button>
         <button class="tab-btn" data-tab="ai">AI Tutor</button>
         <button class="tab-btn" data-tab="quiz">Quick Quiz</button>
+        <button class="tab-btn" data-tab="stroke">Stroke Order</button>
         <button class="tab-btn" data-tab="cue">Cue Cards</button>
       </nav>
 
       <!-- TAB PANELS -->
-      <section id="panel-vocab" class="tab-panel active">
+      <section id="panel-practice" class="tab-panel active">
+        <div class="quest-hero">
+          <div class="quest-copy">
+            <div class="quest-kicker">YOUR FIVE-MINUTE MANDARIN BREAK</div>
+            <h2>Little by little, 你会进步。</h2>
+            <p>Small, varied rounds help Chinese stick. Read it, hear it, choose it, and try saying it yourself. No pressure—just progress.</p>
+            <div id="practice-stats" class="quest-stats" aria-live="polite"></div>
+          </div>
+          <div class="quest-decoration" aria-hidden="true">
+            <span>学</span>
+            <small>learn · play · repeat</small>
+          </div>
+        </div>
+
+        <div class="practice-setup">
+          <div class="practice-setting">
+            <label for="practice-mode">Practice style</label>
+            <select id="practice-mode" class="filter-select">
+              <option value="mixed" selected>🎲 Surprise me — mixed games</option>
+              <option value="meaning">中文 → English · Meaning match</option>
+              <option value="hanzi">English → 中文 · Choose the word</option>
+              <option value="typing">✍️ Type the Mandarin answer</option>
+              <option value="listen">🎧 Listen and choose</option>
+              <option value="cloze">🧩 Complete an example sentence</option>
+              <option value="review">🔁 Review tricky words</option>
+            </select>
+          </div>
+          <div class="practice-setting">
+            <label for="practice-level">Difficulty</label>
+            <select id="practice-level" class="filter-select">
+              <option value="beginner" selected>Beginner · Everyday basics</option>
+              <option value="intermediate">Intermediate · Build fluency</option>
+              <option value="advanced">Advanced · Stretch yourself</option>
+            </select>
+          </div>
+          <div class="practice-setting practice-length">
+            <label for="practice-count">Round length</label>
+            <select id="practice-count" class="filter-select">
+              <option value="5">Quick break · 5 questions</option>
+              <option value="10" selected>Daily quest · 10 questions</option>
+              <option value="15">Keep going · 15 questions</option>
+            </select>
+          </div>
+          <button id="practice-start" class="btn btn-primary practice-start">Start my quest <span aria-hidden="true">→</span></button>
+        </div>
+
+        <div id="practice-game" class="practice-game" aria-live="polite">
+          <div class="practice-ready-card">
+            <div class="practice-ready-emoji" aria-hidden="true">🌱</div>
+            <div class="practice-mode-tag">A LITTLE PRACTICE GOES A LONG WAY</div>
+            <h3>Five minutes is enough to begin.</h3>
+            <p>Every round changes things up. You might match a meaning, type a word, listen to Mandarin, or complete a real example sentence.</p>
+            <div class="practice-ready-steps">
+              <span><b>01</b> Try your best</span>
+              <span><b>02</b> Learn from feedback</span>
+              <span><b>03</b> Earn XP as you go</span>
+            </div>
+            <button id="practice-start-inline" class="btn btn-primary">Let’s go! 开始吧</button>
+          </div>
+        </div>
+        <p class="practice-save-note">Your XP, streak, and tricky-word list are saved in this browser on this device.</p>
+      </section>
+
+      <section id="panel-vocab" class="tab-panel">
         <div class="metrics-row" id="vocab-metrics"></div>
         <div class="panel-actions">
           <button id="btn-shuffle-examples" class="btn btn-secondary">🔀 Randomize Examples</button>
@@ -146,6 +210,19 @@
                 <option value="beginner">Beginner</option>
                 <option value="intermediate" selected>Intermediate</option>
                 <option value="advanced">Advanced</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="ai-topic">Conversation scenario</label>
+              <select id="ai-topic" class="filter-select">
+                <option value="surprise" selected>🎲 Surprise me</option>
+                <option value="daily">Daily life</option>
+                <option value="food">Food & cafés</option>
+                <option value="work">Work & study</option>
+                <option value="travel">Travel & transport</option>
+                <option value="friends">Friends & small talk</option>
+                <option value="shopping">Shopping</option>
+                <option value="culture">Chinese culture</option>
               </select>
             </div>
             <div class="form-group">
