@@ -341,10 +341,10 @@ function submitPracticeAnswer(answer) {
   const correct = [item.h, item.p, item.pk].some(function (value) {
     return value && normalize(value) === typed;
   });
-  completePracticeAnswer(correct);
+  completePracticeAnswer(correct, answer);
 }
 
-function completePracticeAnswer(correct) {
+function completePracticeAnswer(correct, selectedAnswer) {
   if (state.practiceAnswered || !state.practiceQuestion) return;
   state.practiceAnswered = true;
   const question = state.practiceQuestion;
@@ -390,6 +390,7 @@ function completePracticeAnswer(correct) {
   $("practice-game").querySelectorAll("[data-practice-answer]").forEach(function (button) {
     button.disabled = true;
     if (button.dataset.practiceAnswer === item.h) button.classList.add("is-correct");
+    if (!correct && button.dataset.practiceAnswer === selectedAnswer) button.classList.add("is-wrong");
   });
   if (question.type === "typing") {
     const input = $("practice-typed-answer");
