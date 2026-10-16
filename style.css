@@ -630,6 +630,80 @@ body {
   line-height: 1.7;
 }
 .cue-card-content { padding: 4px 0; }
+
+/* Click any word in an example sentence to inspect its pronunciation and meaning. */
+.interactive-sentence {
+  min-width: 0;
+  max-width: 100%;
+}
+.interactive-sentence-line {
+  display: block;
+  line-height: 1.9;
+  overflow-wrap: anywhere;
+}
+.sentence-token {
+  display: inline;
+  appearance: none;
+  border: 0;
+  border-bottom: 1px dotted var(--accent-light);
+  border-radius: 2px;
+  padding: 0 1px;
+  margin: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.sentence-token:hover,
+.sentence-token.active {
+  color: var(--accent-light);
+  background: var(--accent-glow);
+  border-bottom-style: solid;
+}
+.sentence-token:focus-visible {
+  outline: 2px solid var(--accent-light);
+  outline-offset: 2px;
+}
+.sentence-plain { white-space: pre-wrap; }
+.sentence-word-detail {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  line-height: 1.5;
+}
+.sentence-word-detail[hidden] { display: none !important; }
+.sentence-detail-hanzi {
+  color: var(--text);
+  font-family: 'Noto Sans SC', sans-serif;
+  font-size: 21px;
+  font-weight: 800;
+}
+.sentence-detail-pinyin {
+  color: var(--accent-light);
+  font-size: 13px;
+  font-weight: 650;
+}
+.sentence-detail-meaning {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.cue-card-content .interactive-sentence-line { font-size: 24px; line-height: 1.85; }
+.cue-card-content .sentence-word-detail { margin-bottom: 6px; }
+.practice-feedback-example .interactive-sentence-line { font-size: 19px; }
+@media (max-width: 680px) {
+  .cue-card-content .interactive-sentence-line { font-size: 20px; }
+  .sentence-word-detail { align-items: center; }
+  .sentence-detail-hanzi { font-size: 19px; }
+}
+
 .cue-card-tip {
   margin-top: 9px;
   color: var(--text-dim);
