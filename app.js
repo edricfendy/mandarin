@@ -11,6 +11,8 @@ const state = {
   selectedLengths: new Set(["1", "2", "3", "4+"]),
   cueIndex: 0,
   cueFlipped: false,
+  cueStyleOffset: 0,
+  exampleSeed: 0,
   quizItems: [],
   aiMessages: [
     {
@@ -273,7 +275,8 @@ function renderPracticeQuestion() {
   } else if (type === "cloze") {
     label = "USE THE CONTEXT";
     title = "Complete the example sentence";
-    prompt = '<div class="practice-cloze-sentence">' + escapeHtml(String(item.xz).replace(item.h, "＿＿＿")) + '</div><div class="practice-prompt-note">Choose the word that fits the blank.</div>';
+    const clozePair = getVariedExamplePair(item, state.exampleSeed + state.practiceIndex);
+    prompt = '<div class="practice-cloze-sentence">' + escapeHtml(makeSentenceCloze(clozePair[0], item.h)) + '</div><div class="practice-prompt-note">Choose the word that fits the blank.</div>';
   }
 
   const progress = Math.round((state.practiceIndex / state.practiceDeck.length) * 100);
@@ -370,9 +373,10 @@ function completePracticeAnswer(correct, selectedAnswer) {
   renderPracticeStats();
 
   const feedback = $("practice-feedback");
-  const example = item.xz
-    ? '<div class="practice-feedback-example"><strong>In context</strong><div class="practice-example-zh">' + escapeHtml(item.xz) +
-      '</div><div class="practice-example-en">' + escapeHtml(item.xe || "") + '</div></div>'
+  const practiceExamplePair = getVariedExamplePair(item, state.exampleSeed + state.practiceIndex);
+  const example = practiceExamplePair[0]
+    ? '<div class="practice-feedback-example"><strong>In context</strong><div class="practice-example-zh">' + escapeHtml(practiceExamplePair[0]) +
+      '</div><div class="practice-example-en">' + escapeHtml(practiceExamplePair[1] || "") + '</div></div>'
     : "";
   feedback.hidden = false;
   feedback.className = "practice-feedback " + (correct ? "is-correct" : "is-incorrect");
@@ -477,6 +481,150 @@ function choice(items, seed) {
   return items[seededValue(String(seed), seed) % items.length];
 }
 
+
+const EXAMPLE_BANK = {
+  "啊": [["啊，原来你也在这里！", "Oh, so you're here too!"], ["你明天也来啊？", "You're coming tomorrow too, right?"], ["啊，我终于明白你的意思了。", "Ah, now I finally understand what you mean."]],
+  "的": [["这是我昨天买的书。", "This is the book I bought yesterday."], ["门口那个穿蓝色衣服的人是我的朋友。", "The person in blue by the door is my friend."], ["我喜欢你做的这道菜。", "I like this dish that you made."]],
+  "了": [["我吃完饭了，我们走吧。", "I've finished eating; let's go."], ["雨停了，我们可以出门了。", "The rain has stopped, so we can go out now."], ["他已经到家了，你不用担心。", "He's already home, so you don't need to worry."]],
+  "吗": [["你今天有空吗？", "Are you free today?"], ["这家店可以刷卡吗？", "Can I pay by card at this shop?"], ["你看过这部电影吗？", "Have you seen this movie?"]],
+  "呢": [["我很好，你呢？", "I'm doing well. How about you?"], ["我的钥匙呢？刚才还放在桌上。", "Where are my keys? I just left them on the table."], ["你在找什么呢？", "What are you looking for?"]],
+  "是": [["她是我的新同事。", "She is my new colleague."], ["今天是星期五，我们去吃点好的吧。", "It's Friday today, so let's go out for something nice."], ["这不是我要找的地址。", "This isn't the address I'm looking for."]],
+  "我": [["我每天坐公交车上班。", "I take the bus to work every day."], ["我把会议时间记在手机里了。", "I saved the meeting time on my phone."], ["如果你需要帮忙，我可以过来。", "I can come over if you need help."]],
+  "你": [["你想喝点什么？", "What would you like to drink?"], ["你怎么这么早就到了？", "How did you get here so early?"], ["这件事你怎么看？", "What do you think about this?"]],
+  "他": [["他周末常去公园跑步。", "He often goes running in the park on weekends."], ["我昨天给他发了消息，但他还没回复。", "I messaged him yesterday, but he hasn't replied yet."], ["他比我更熟悉这座城市。", "He's more familiar with this city than I am."]],
+  "她": [["她正在准备明天的考试。", "She's preparing for tomorrow's exam."], ["她下班以后喜欢去游泳。", "She likes to go swimming after work."], ["我觉得她的建议很实用。", "I think her advice is very practical."]],
+  "它": [["这只猫很可爱，我想抱抱它。", "This cat is adorable, and I want to cuddle it."], ["这个杯子有点脏，先把它洗一下吧。", "This cup is a little dirty, so let's wash it first."], ["我找不到遥控器，你看到它了吗？", "I can't find the remote. Have you seen it?"]],
+  "在": [["他们在家看电影。", "They're watching a movie at home."], ["我在地铁站等你，到了给我打电话。", "I'm waiting for you at the metro station. Call me when you arrive."], ["你的护照在抽屉里。", "Your passport is in the drawer."]],
+  "有": [["冰箱里还有一些牛奶。", "There's still some milk in the fridge."], ["附近有一家不错的咖啡店。", "There's a good coffee shop nearby."], ["你今天有时间一起吃午饭吗？", "Do you have time to have lunch together today?"]],
+  "不": [["我今天不想出门，想在家休息。", "I don't feel like going out today; I'd rather rest at home."], ["这条路不远，走过去就可以。", "It's not far; we can walk there."], ["别着急，问题没有你想的那么复杂。", "Don't worry; the problem isn't as complicated as you think."]],
+  "很": [["这家餐厅的面条很好吃。", "The noodles at this restaurant are really good."], ["今天外面很冷，记得多穿一点。", "It's very cold outside today, so remember to dress warmly."], ["我很高兴你能来参加聚会。", "I'm really glad you could come to the party."]],
+  "好": [["你准备好出发了吗？", "Are you ready to leave?"], ["这个主意听起来很好，我们试试吧。", "That sounds like a great idea. Let's try it."], ["好，我把地址发给你。", "Okay, I'll send you the address."]],
+  "吃": [["我们晚上一起吃火锅吧。", "Let's have hot pot together tonight."], ["药最好饭后吃。", "It's best to take the medicine after a meal."], ["你吃过这家店的招牌菜吗？", "Have you tried this restaurant's signature dish?"]],
+  "喝": [["运动以后记得多喝水。", "Remember to drink plenty of water after exercising."], ["我早上习惯喝一杯咖啡。", "I usually have a cup of coffee in the morning."], ["开车之前不要喝酒。", "Don't drink alcohol before driving."]],
+  "去": [["我下班后去超市买水果。", "I'll go to the supermarket to buy fruit after work."], ["周末你想去哪儿玩？", "Where would you like to go this weekend?"], ["太晚了，我们明天再去吧。", "It's too late. Let's go tomorrow instead."]],
+  "来": [["你明天能早点来吗？", "Can you come a little earlier tomorrow?"], ["听说这家店新出了甜点，我想来试试。", "I heard this shop has new desserts, so I want to come and try them."], ["他刚来公司，还不太认识大家。", "He just joined the company and doesn't know everyone very well yet."]],
+  "看": [["周末我们去看一场电影吧。", "Let's go and see a movie this weekend."], ["请看一下邮件里的附件。", "Please take a look at the attachment in the email."], ["从这里可以看到整座城市。", "You can see the whole city from here."]],
+  "说": [["有不明白的地方，请直接说出来。", "If anything is unclear, please say so directly."], ["她说周五之前会把报告发过来。", "She said she'd send the report over by Friday."], ["这件事说起来简单，做起来却不容易。", "It's easy to talk about this, but not so easy to do."]],
+  "想": [["我想学做几道中国菜。", "I want to learn how to cook a few Chinese dishes."], ["你想先休息一下，还是继续走？", "Would you like to rest first or keep walking?"], ["想到小时候的旅行，我就忍不住笑了。", "I can't help smiling when I think about that childhood trip."]],
+  "要": [["我想要一杯热茶，谢谢。", "I'd like a cup of hot tea, please."], ["出门前别忘了带钥匙。", "Don't forget to bring your keys before you leave."], ["如果你要改时间，请提前告诉我。", "Please let me know in advance if you need to change the time."]],
+  "会": [["下个月我会去北京出差。", "I'll be going to Beijing on a business trip next month."], ["多练习几次，你就会越来越熟练。", "With a little more practice, you'll get better and better."], ["你会不会做这道菜？", "Do you know how to make this dish?"]],
+  "学": [["学中文的时候，多开口很重要。", "When learning Chinese, it's important to speak up and practise."], ["我想跟你学一道简单的家常菜。", "I'd like to learn a simple home-style dish from you."], ["这次经历让我学到了很多。", "I learned a lot from this experience."]],
+  "学习": [["我每天睡前学习半个小时。", "I study for half an hour before bed every day."], ["我们用游戏来学习新的词语。", "We use games to learn new vocabulary."], ["学习一门语言需要时间，也需要耐心。", "Learning a language takes time and patience."]],
+  "人": [["今天商场里的人特别多。", "The shopping mall is especially crowded today."], ["她是一个很容易相处的人。", "She's an easy person to get along with."], ["每个人都有自己的生活节奏。", "Everyone has their own pace of life."]],
+  "水": [["麻烦给我一杯温水，谢谢。", "Could I have a glass of warm water, please?"], ["天气太热了，记得带水。", "It's so hot; remember to bring some water."], ["这条河的水很清澈。", "The water in this river is very clear."]],
+  "家": [["忙完这周，我们一起回家吧。", "Let's head home together once we're done with this week."], ["我家离公司只有十分钟的路程。", "My home is only ten minutes from the office."], ["这家餐厅的服务很周到。", "The service at this restaurant is excellent."]],
+  "书": [["这本书很有意思，我两天就看完了。", "This book was so interesting that I finished it in two days."], ["我把书忘在会议室了。", "I left my book in the meeting room."], ["她喜欢在睡觉前读书。", "She likes to read before going to sleep."]],
+  "买": [["我打算周末买一双运动鞋。", "I plan to buy a pair of trainers this weekend."], ["买东西之前，最好先比较一下价格。", "It's best to compare prices before buying something."], ["你可以帮我买一张回程车票吗？", "Could you help me buy a return ticket?"]],
+  "做": [["今晚轮到我做饭了。", "It's my turn to cook tonight."], ["我们先把最重要的事情做完吧。", "Let's finish the most important task first."], ["她做事很认真，从来不马虎。", "She's very thorough and never does things carelessly."]],
+  "请": [["请问，最近的地铁站怎么走？", "Excuse me, how do I get to the nearest metro station?"], ["请坐，我马上给你倒茶。", "Please have a seat. I'll pour you some tea."], ["他请同事们一起吃午饭。", "He treated his colleagues to lunch."]],
+  "谢谢": [["谢谢你今天特意来帮我。", "Thank you for taking the time to help me today."], ["谢谢，这个建议真的很有用。", "Thanks, that advice is really useful."], ["我不知道该怎么说，只能一直说谢谢。", "I didn't know what else to say, so I just kept saying thank you."]],
+  "今天": [["今天下班后，我想去健身房。", "I want to go to the gym after work today."], ["今天的会议比预期短。", "Today's meeting was shorter than expected."], ["今天要做的事情有点多，我们先列个清单吧。", "We have quite a lot to do today, so let's make a list first."]],
+  "明天": [["明天如果不下雨，我们去爬山吧。", "If it doesn't rain tomorrow, let's go hiking."], ["我明天早上有个很早的会议。", "I have an early meeting tomorrow morning."], ["这份文件明天交也来得及。", "There's still time to submit this document tomorrow."]],
+  "哪里": [["不好意思，请问洗手间在哪里？", "Excuse me, where is the restroom?"], ["你觉得哪里适合周末短途旅行？", "Where do you think would be good for a short weekend trip?"], ["我把门卡放哪里了？怎么找不到了。", "Where did I put my access card? I can't find it."]],
+  "什么": [["你下班以后通常做什么？", "What do you usually do after work?"], ["冰箱里什么都没有，我们叫外卖吧。", "There's nothing in the fridge, so let's order delivery."], ["你觉得送什么礼物比较合适？", "What gift do you think would be appropriate?"]],
+  "为什么": [["你为什么突然改变主意？", "Why did you suddenly change your mind?"], ["我终于明白你为什么不想去了。", "I finally understand why you don't want to go."], ["为什么不试试另外一种方法？", "Why not try another method?"]],
+  "因为": [["因为路上堵车，我迟到了十分钟。", "I was ten minutes late because of traffic."], ["我选这家餐厅，因为这里的菜很新鲜。", "I chose this restaurant because the food here is fresh."], ["因为太累了，他一到家就睡着了。", "Because he was so tired, he fell asleep as soon as he got home."]],
+  "所以": [["外面正在下雨，所以我们改在家吃饭。", "It's raining outside, so we'll eat at home instead."], ["我昨晚睡得很晚，所以今天有点困。", "I went to bed late last night, so I'm a little sleepy today."], ["公交车还没来，所以我们再等五分钟吧。", "The bus hasn't arrived yet, so let's wait another five minutes."]],
+  "朋友": [["周末我约了几个朋友一起打球。", "I've arranged to play ball with a few friends this weekend."], ["老朋友见面，总有聊不完的话题。", "Old friends always have endless things to talk about when they meet."], ["她是我在大学认识的朋友。", "She's a friend I met at university."]],
+  "工作": [["最近工作有点忙，但我很喜欢这个项目。", "Work has been a little busy lately, but I really like this project."], ["他下班后很少查看工作邮件。", "He rarely checks work emails after he finishes for the day."], ["找到适合自己的工作并不容易。", "It's not easy to find a job that's right for you."]],
+  "时间": [["你有时间的话，我们一起喝杯咖啡。", "If you have time, let's have a coffee together."], ["时间过得真快，我们已经认识五年了。", "Time flies—we've known each other for five years already."], ["出发前请确认一下火车时间。", "Please double-check the train time before you leave."]],
+  "手机": [["我的手机快没电了，可以借你的充一下吗？", "My phone is almost out of battery. Could I use yours to charge it?"], ["开会的时候，请把手机调成静音。", "Please put your phone on silent during the meeting."], ["我用手机查了一下附近的餐厅。", "I used my phone to look up nearby restaurants."]],
+  "喜欢": [["我喜欢边喝咖啡边看书。", "I like reading while drinking coffee."], ["她很喜欢旅行，每年都会去一个新地方。", "She loves travelling and visits somewhere new every year."], ["你喜欢安静的咖啡馆，还是热闹的餐厅？", "Do you prefer quiet cafés or lively restaurants?"]],
+  "累": [["今天走了两万步，我现在有点累。", "I've walked twenty thousand steps today, so I'm a little tired."], ["如果你累了，我们可以坐下来休息。", "If you're tired, we can sit down and rest."], ["连续开了三个小时的会，大家都累了。", "After three hours of meetings in a row, everyone was tired."]],
+  "忙": [["我这周很忙，周五以后就轻松了。", "I'm busy this week, but things will ease up after Friday."], ["她忙着准备晚饭，没听见电话响。", "She was busy preparing dinner and didn't hear the phone ring."], ["最近你工作忙不忙？", "Have you been busy at work lately?"]],
+  "现在": [["我现在不方便接电话，晚点回你。", "I can't take a call right now; I'll get back to you later."], ["我们现在出发，还赶得上最后一班车。", "If we leave now, we'll still catch the last bus."], ["现在网上订票很方便。", "Booking tickets online is very convenient nowadays."]],
+  "可以": [["你可以把菜单给我看一下吗？", "Could you show me the menu, please?"], ["周六下午可以吗？", "Would Saturday afternoon work?"], ["这张票可以改签，但不能退款。", "This ticket can be changed, but it can't be refunded."]],
+  "觉得": [["我觉得这家店的服务特别好。", "I think the service at this shop is especially good."], ["你觉得我们几点出发比较合适？", "What time do you think would be best for us to leave?"], ["刚开始我觉得很难，练习以后就好多了。", "I found it difficult at first, but it got much easier with practice."]],
+  "需要": [["如果你需要帮忙，随时告诉我。", "Let me know any time you need help."], ["办理入住时需要出示护照。", "You need to show your passport when checking in."], ["这个计划还需要一点时间才能完成。", "This plan needs a little more time to be completed."]],
+  "当然": [["当然可以！你想什么时候出发？", "Of course! When would you like to leave?"], ["这当然不是你一个人的责任。", "Of course, this isn't your responsibility alone."], ["他当然记得那次特别的旅行。", "Of course he remembers that special trip."]],
+  "如果": [["如果你有空，我们今晚一起吃饭吧。", "If you're free, let's have dinner together tonight."], ["如果找不到地址，就打电话给我。", "Call me if you can't find the address."], ["如果明天放晴，我们就去海边走走。", "If it clears up tomorrow, we'll take a walk by the sea."]],
+  "对不起": [["对不起，我把你的名字记错了。", "I'm sorry, I got your name wrong."], ["对不起，我来晚了，让你久等了。", "Sorry I'm late and kept you waiting."], ["对不起，这个位置已经有人坐了。", "Sorry, this seat is already taken."]],
+  "没关系": [["没关系，下次早点告诉我就好。", "That's okay. Just let me know a little earlier next time."], ["没关系，我可以再解释一遍。", "No problem. I can explain it again."], ["听错了也没关系，继续练习就好。", "It's okay to mishear something; just keep practising."]]
+};
+
+function isWeakExample(item, pair) {
+  const zh = String(pair[0] || "").trim();
+  const en = String(pair[1] || "").trim();
+  if (!zh || !en || !String(item.h || "") || !zh.includes(String(item.h))) return true;
+  if (/^我在学习[“"'‘].+[”"'’][。.!?]?$/u.test(zh)) return true;
+  if (/今天的讨论里|重点练习了|老师提醒我们|关键表达|核心位置|口语练习中|我们先理解/u.test(zh)) return true;
+  if (/^(?:i['’]?m|i am) learning\s+['"“‘].+['"”’][.!?]?$/i.test(en)) return true;
+  if (/this expression|the expression in context|focused on practicing|practicing this expression|key expression|key point|placed this expression|understand this expression/i.test(en)) return true;
+  if (String(item.h).length === 1 && /learning\s+['"“‘][^'"“”‘’]+['"”’]/i.test(en)) return true;
+  return false;
+}
+
+function buildFallbackExamplePair(item, seed) {
+  const hanzi = String(item.h || "").trim();
+  const rawMeaning = String(item.e || "this word").split(/[;；|]/)[0].trim();
+  const meaning = rawMeaning.replace(/^\([^)]*\)\s*/, "").replace(/^(?:to\s+)/i, "").replace(/[.;,]+$/, "").trim() || "this word";
+  const fullMeaning = rawMeaning.replace(/^\([^)]*\)\s*/, "").trim() || "this word";
+  const meaningLower = fullMeaning.toLowerCase();
+  const idx = seededValue(hanzi, Number(seed || 0) + 31) % 3;
+
+  if (/particle|interjection|pronoun|preposition|conjunction|auxiliary|classifier|measure word|suffix|prefix|exclamation|modal word|grammatical marker/i.test(meaningLower)) {
+    const grammarExamples = [
+      ["老师用“" + hanzi + "”举了一个例子，帮助我们理解语气。", "The teacher used “" + fullMeaning + "” in an example to explain the tone."],
+      ["我听了几遍，才明白这句话里“" + hanzi + "”的用法。", "After listening several times, I understood how “" + fullMeaning + "” works in this sentence."],
+      ["这句话里的“" + hanzi + "”改变了整句话的语气。", "The “" + fullMeaning + "” in this sentence changes its tone."]
+    ];
+    return grammarExamples[idx];
+  }
+  if (/^to\s+/i.test(rawMeaning) || /\bverb\b|\(v[ti]?\)/i.test(meaningLower)) {
+    const verbExamples = [
+      ["我打算明天" + hanzi + "，你要一起吗？", "I plan to " + meaning + " tomorrow. Would you like to join me?"],
+      ["忙完工作以后，我们再" + hanzi + "吧。", "Let's " + meaning + " after we finish work."],
+      ["他建议我们先" + hanzi + "，再决定下一步。", "He suggested that we " + meaning + " first and decide what to do next."]
+    ];
+    return verbExamples[idx];
+  }
+  if (/adjective|\(adj\.?\)|\bhappy\b|\bsad\b|\btired\b|\bbusy\b|\bexpensive\b|\bcheap\b|\bbeautiful\b|\bimportant\b|\bdifficult\b|\beasy\b|\bcomfortable\b|\bconvenient\b|\binteresting\b|\bquiet\b|\bnoisy\b|\bhot\b|\bcold\b|\bwarm\b|\bcool\b/i.test(meaningLower)) {
+    const isWeather = /hot|cold|warm|cool|sunny|rainy|windy|pleasant|nice|bad weather/i.test(meaningLower);
+    const isFeeling = /happy|sad|tired|busy|worried|angry|excited|nervous|surprised|sleepy/i.test(meaningLower);
+    const examples = isWeather ? [
+      ["今天的天气很" + hanzi + "，适合出去走走。", "The weather is " + meaning + " today, so it's a good day to go out."],
+      ["外面这么" + hanzi + "，我们找个地方坐一会儿吧。", "It's so " + meaning + " outside. Let's find somewhere to sit for a while."],
+      ["天气预报说明天会更" + hanzi + "。", "The forecast says the weather will be even more " + meaning + " tomorrow."]
+    ] : isFeeling ? [
+      ["听到这个消息，她显得很" + hanzi + "。", "She seemed very " + meaning + " when she heard the news."],
+      ["忙了一整天以后，我已经很" + hanzi + "了。", "After a full day of work, I was already very " + meaning + "."],
+      ["他看起来有点" + hanzi + "，我们先别打扰他。", "He looks a little " + meaning + ", so let's not disturb him yet."]
+    ] : [
+      ["这个选择很" + hanzi + "，但我们还可以再想想。", "This choice is " + meaning + ", but we can still think it over."],
+      ["我觉得这家店的环境特别" + hanzi + "。", "I think the atmosphere in this shop is particularly " + meaning + "."],
+      ["如果能更" + hanzi + "一点，整个过程会顺利很多。", "If it were a little more " + meaning + ", the whole process would go much more smoothly."]
+    ];
+    return examples[idx];
+  }
+  const nounExamples = [
+    ["你知道哪里可以买到" + hanzi + "吗？", "Do you know where I can buy " + meaning + "?"],
+    ["我把" + hanzi + "放在桌上了，你看见了吗？", "I've left the " + meaning + " on the table. Have you seen it?"],
+    ["这个" + hanzi + "比我想象的更有意思。", "This " + meaning + " is more interesting than I expected."]
+  ];
+  return nounExamples[idx];
+}
+
+function getVariedExamplePair(item, seed) {
+  const pair = [String(item.xz || "").trim(), String(item.xe || "").trim()];
+  const bank = EXAMPLE_BANK[String(item.h || "").trim()];
+  const weak = isWeakExample(item, pair);
+  if (Array.isArray(bank) && bank.length && (weak || state.exampleSeed > 0)) {
+    const idx = seededValue(String(item.h) + ":" + String(seed || 0), state.exampleSeed + 1) % bank.length;
+    return bank[idx];
+  }
+  if (weak) return buildFallbackExamplePair(item, seed);
+  return pair;
+}
+
+function makeSentenceCloze(sentence, target) {
+  const text = String(sentence || "");
+  const word = String(target || "");
+  const index = word ? text.indexOf(word) : -1;
+  if (index < 0) return text;
+  return text.slice(0, index) + "＿＿＿" + text.slice(index + word.length);
+}
+
+
 function initChips(containerId, values, selectedSet, renderLabel) {
   const container = $(containerId);
   container.innerHTML = "";
@@ -564,18 +712,19 @@ function renderTable() {
   const pageRows = rows.slice(start, start + PAGE_SIZE);
 
   $("vocab-tbody").innerHTML = pageRows
-    .map(
-      (item) => `<tr>
-        <td class="col-hanzi">${escapeHtml(item.h)}</td>
-        <td class="col-pinyin">${escapeHtml(item.p)}</td>
-        <td>${escapeHtml(item.e)}</td>
-        <td>${escapeHtml(item.c)}</td>
-        <td>${escapeHtml(item.v)}</td>
-        <td>${item.l == null ? "N/A" : escapeHtml(item.l)}</td>
-        <td>${escapeHtml(item.xz)}</td>
-        <td>${escapeHtml(item.xe)}</td>
-      </tr>`
-    )
+    .map((item, index) => {
+      const examplePair = getVariedExamplePair(item, state.exampleSeed + start + index);
+      return "<tr>" +
+        '<td class="col-hanzi">' + escapeHtml(item.h) + '</td>' +
+        '<td class="col-pinyin">' + escapeHtml(item.p) + '</td>' +
+        '<td>' + escapeHtml(item.e) + '</td>' +
+        '<td>' + escapeHtml(item.c) + '</td>' +
+        '<td>' + escapeHtml(item.v) + '</td>' +
+        '<td>' + (item.l == null ? "N/A" : escapeHtml(item.l)) + '</td>' +
+        '<td>' + escapeHtml(examplePair[0]) + '</td>' +
+        '<td>' + escapeHtml(examplePair[1]) + '</td>' +
+      '</tr>';
+    })
     .join("");
 
   const pages = [];
@@ -905,8 +1054,9 @@ function renderQuiz() {
     return;
   }
 
-  const rows = items.slice(0, Math.min(count, 20)).map((item) => {
-    const sentence = item.xz && String(item.xz).includes(item.h) ? String(item.xz).replace(item.h, "___") : `___ - ${item.e}`;
+  const rows = items.slice(0, Math.min(count, 20)).map((item, index) => {
+    const pair = getVariedExamplePair(item, state.exampleSeed + index);
+    const sentence = pair[0] && String(pair[0]).includes(item.h) ? makeSentenceCloze(pair[0], item.h) : "___ - " + item.e;
     return [sentence, item.h, item.e];
   });
   $("quiz-area").innerHTML = makeDragDrop("quiz-drag", "Dynamic Cloze Quiz", rows, rows.map((x) => x[1]).sort(() => 0.5 - Math.random()));
@@ -1283,7 +1433,10 @@ function renderAll() {
 
 function downloadCsv() {
   const header = ["hanzi", "pinyin", "english", "chars", "level", "hsk", "example_zh", "example_en"];
-  const rows = state.filtered.map((item) => [item.h, item.p, item.e, item.c, item.v, item.l ?? "", item.xz, item.xe]);
+  const rows = state.filtered.map((item, index) => {
+    const pair = getVariedExamplePair(item, state.exampleSeed + index);
+    return [item.h, item.p, item.e, item.c, item.v, item.l ?? "", pair[0], pair[1]];
+  });
   const csv = [header, ...rows]
     .map((row) => row.map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`).join(","))
     .join("\n");
@@ -1308,6 +1461,7 @@ function wireEvents() {
 
   $("btn-shuffle-examples").addEventListener("click", () => {
     state.shuffleSeed = Date.now();
+    state.exampleSeed += 1;
     applyFilters();
   });
   $("btn-download-csv").addEventListener("click", downloadCsv);
