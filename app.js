@@ -377,8 +377,8 @@ function completePracticeAnswer(correct, selectedAnswer) {
   const feedback = $("practice-feedback");
   const practiceExamplePair = getVariedExamplePair(item, state.exampleSeed + state.practiceIndex);
   const example = practiceExamplePair[0]
-    ? '<div class="practice-feedback-example"><strong>In context</strong><div class="practice-example-zh">' + escapeHtml(practiceExamplePair[0]) +
-      '</div>' + interactiveSentenceMarkup(practiceExamplePair[0]) + '<div class="practice-example-en">' + escapeHtml(practiceExamplePair[1] || "") + '</div></div>'
+    ? '<div class="practice-feedback-example"><strong>In context</strong>' + interactiveSentenceMarkup(practiceExamplePair[0]) +
+      '<div class="practice-example-en">' + escapeHtml(practiceExamplePair[1] || "") + '</div></div>'
     : "";
   feedback.hidden = false;
   feedback.className = "practice-feedback " + (correct ? "is-correct" : "is-incorrect");
