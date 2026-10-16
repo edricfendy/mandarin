@@ -13,6 +13,8 @@ const state = {
   cueFlipped: false,
   cueStyleOffset: 0,
   exampleSeed: 0,
+  sentenceWordMap: new Map(),
+  sentenceWordsByFirst: new Map(),
   quizItems: [],
   aiMessages: [
     {
@@ -376,7 +378,7 @@ function completePracticeAnswer(correct, selectedAnswer) {
   const practiceExamplePair = getVariedExamplePair(item, state.exampleSeed + state.practiceIndex);
   const example = practiceExamplePair[0]
     ? '<div class="practice-feedback-example"><strong>In context</strong><div class="practice-example-zh">' + escapeHtml(practiceExamplePair[0]) +
-      '</div><div class="practice-example-en">' + escapeHtml(practiceExamplePair[1] || "") + '</div></div>'
+      '</div>' + interactiveSentenceMarkup(practiceExamplePair[0]) + '<div class="practice-example-en">' + escapeHtml(practiceExamplePair[1] || "") + '</div></div>'
     : "";
   feedback.hidden = false;
   feedback.className = "practice-feedback " + (correct ? "is-correct" : "is-incorrect");
@@ -542,6 +544,100 @@ const EXAMPLE_BANK = {
   "没关系": [["没关系，下次早点告诉我就好。", "That's okay. Just let me know a little earlier next time."], ["没关系，我可以再解释一遍。", "No problem. I can explain it again."], ["听错了也没关系，继续练习就好。", "It's okay to mishear something; just keep practising."]]
 };
 
+
+const LONG_EXAMPLE_OVERRIDES = {
+  "啊": [
+    ["啊，原来你也在这里！我还以为你今天不来了呢。", "Oh, so you're here too! I thought you weren't coming today."],
+    ["你明天也来啊？那我们可以一起吃午饭，顺便聊聊最近的工作。", "You're coming tomorrow too? We can have lunch together and catch up on work."],
+    ["啊，我终于明白你的意思了，谢谢你刚才耐心地解释了这么多。", "Ah, I finally understand what you mean. Thanks for taking the time to explain it."]
+  ],
+  "吗": [
+    ["你今天下班以后有空吗？我们可以找一家安静的咖啡店聊一聊。", "Are you free after work today? We could find a quiet café and have a chat."],
+    ["这家店可以刷卡吗？如果不行，我就去附近的取款机取一些现金。", "Can I pay by card at this shop? If not, I'll get some cash from a nearby ATM."],
+    ["你看过这部电影吗？我听朋友说结尾很出乎意料，所以一直很想看。", "Have you seen this movie? A friend said the ending is surprising, so I've really wanted to watch it."]
+  ],
+  "呢": [
+    ["我最近还不错，每天都在练习中文，你呢？最近工作忙不忙？", "I've been doing well and practising Chinese every day. How about you? Have you been busy at work?"],
+    ["我的钥匙呢？我明明刚才放在桌上了，现在怎么找不到了？", "Where are my keys? I clearly left them on the table just now, so why can't I find them?"],
+    ["你在找什么呢？要不要我帮你一起看看，可能就在旁边。", "What are you looking for? Would you like me to help? It might be nearby."]
+  ],
+  "我": [
+    ["我每天坐公交车去上班，路上会听一会儿中文播客练习听力。", "I take the bus to work every day and listen to a Chinese podcast to practise listening on the way."],
+    ["我把会议时间和需要准备的资料都记在手机里了，免得明天忘记。", "I saved the meeting time and the materials I need on my phone so I won't forget tomorrow."],
+    ["如果你需要帮忙，我下班以后可以过来，我们一起把事情处理好。", "If you need help, I can come over after work and we can sort things out together."]
+  ],
+  "你": [
+    ["你明天如果有时间，可以陪我去一趟书店吗？我想买一本中文练习册。", "If you have time tomorrow, could you come with me to the bookstore? I want to buy a Chinese workbook."],
+    ["你怎么这么早就到了？我以为我们约的是九点，还准备再等一会儿。", "How did you get here so early? I thought we were meeting at nine and was going to wait a little longer."],
+    ["这件事你怎么看？我们可以先听听每个人的意见，再决定怎么做。", "What do you think about this? We can hear everyone's opinion first and then decide what to do."]
+  ],
+  "是": [
+    ["她是我的新同事，今天刚加入我们团队，主要负责客户项目和沟通。", "She's my new colleague. She joined our team today and mainly handles client projects and communication."],
+    ["今天是星期五，我们下班以后去吃点好的吧，顺便庆祝项目顺利完成。", "It's Friday today. Let's get something nice to eat after work and celebrate finishing the project."],
+    ["这不是我要找的地址，我们先打电话确认一下，免得白跑一趟。", "This isn't the address I'm looking for. Let's call to confirm it so we don't make a wasted trip."]
+  ],
+  "有": [
+    ["冰箱里还有一些牛奶和水果，早上来不及做早餐的话可以先吃这些。", "There's still some milk and fruit in the fridge. You can have those if there's no time to make breakfast."],
+    ["附近有一家不错的咖啡店，环境很安静，适合坐下来工作或看书。", "There's a good café nearby. It's quiet and a nice place to work or read."],
+    ["你今天有时间一起吃午饭吗？我正好想跟你讨论一下下周的安排。", "Do you have time to have lunch together today? I'd like to discuss next week's plans with you."]
+  ],
+  "好": [
+    ["你准备好出发了吗？如果东西都带齐了，我们现在就可以下楼。", "Are you ready to leave? If you've got everything, we can go downstairs now."],
+    ["这个主意听起来很好，我们先试着做一次，再看看有没有需要调整的地方。", "That sounds like a great idea. Let's try it once and see whether anything needs adjusting."],
+    ["好，我把地址和集合时间发给你，到了附近以后我们再联系。", "Okay, I'll send you the address and meeting time. We'll get in touch when we're nearby."]
+  ],
+  "去": [
+    ["我下班后打算去超市买水果和牛奶，回家以后再准备明天的早餐。", "I'm planning to go to the supermarket for fruit and milk after work, then prepare tomorrow's breakfast at home."],
+    ["周末你想去哪儿玩？如果天气不错，我们可以去海边散步看日落。", "Where would you like to go this weekend? If the weather is nice, we could walk by the sea and watch the sunset."],
+    ["时间已经不早了，我们明天再去吧，这样就不用一路赶时间了。", "It's already getting late. Let's go tomorrow so we won't have to rush the whole way."]
+  ],
+  "来": [
+    ["你明天能早点来吗？我们想在会议开始以前先确认一下资料和设备。", "Can you come a little earlier tomorrow? We'd like to check the documents and equipment before the meeting starts."],
+    ["听说这家店新出了几种甜点，我想来试试，看看有没有适合大家的口味。", "I heard this shop has several new desserts. I'd like to try them and see whether there's something everyone would enjoy."],
+    ["他刚来公司，对流程还不太熟悉，如果你有空可以带他了解一下。", "He has just joined the company and isn't familiar with the process yet. You could show him around if you have time."]
+  ],
+  "看": [
+    ["周末我们去看一场电影吧，结束以后再找一家餐厅吃晚饭。", "Let's go and see a movie this weekend, then find a restaurant for dinner afterwards."],
+    ["请看一下邮件里的附件，如果有内容不清楚的地方，可以直接问我。", "Please take a look at the email attachment. You can ask me directly if anything is unclear."],
+    ["从这里可以看到整座城市，尤其是晚上，灯光亮起来以后特别漂亮。", "You can see the whole city from here. It's especially beautiful at night when all the lights come on."]
+  ],
+  "说": [
+    ["有不明白的地方，请直接说出来，我们可以一起讨论，不用担心问错问题。", "If anything is unclear, please say so. We can discuss it together, so don't worry about asking the wrong question."],
+    ["她说周五之前会把报告发过来，因此我们还有时间检查数据和格式。", "She said she'd send the report by Friday, so we still have time to check the data and formatting."],
+    ["这件事说起来简单，做起来却不容易，所以最好提前安排好每个步骤。", "It's easy to talk about this but harder to do, so it's best to plan each step in advance."]
+  ],
+  "学习": [
+    ["我每天睡前学习半个小时，先复习旧词，再练习几个新的例句。", "I study for half an hour before bed every day, reviewing old words before practising a few new example sentences."],
+    ["我们用游戏来学习新的词语，这样不仅比较有趣，也更容易记住用法。", "We use games to learn new vocabulary. It's more fun this way and easier to remember how the words are used."],
+    ["学习一门语言需要时间，也需要耐心；每天练习一点，比偶尔学习很久更有效。", "Learning a language takes time and patience. A little daily practice is more effective than studying for a long time once in a while."]
+  ],
+  "朋友": [
+    ["周末我约了几个朋友一起打球，结束以后打算找个地方吃晚饭聊天。", "I've arranged to play ball with a few friends this weekend, then find somewhere to have dinner and chat."],
+    ["老朋友见面，总有聊不完的话题，即使很久没见也不会觉得陌生。", "Old friends always have endless things to talk about, and it never feels strange even after a long time apart."],
+    ["她是我在大学认识的朋友，毕业以后我们一直保持联系，偶尔还会一起旅行。", "She's a friend I met at university. We've stayed in touch since graduating and sometimes travel together."]
+  ],
+  "工作": [
+    ["最近工作有点忙，但我很喜欢这个项目，因为每天都能学到新的东西。", "Work has been a little busy lately, but I like this project because I learn something new every day."],
+    ["他下班后很少查看工作邮件，希望把晚上的时间留给家人和自己的兴趣。", "He rarely checks work emails after work because he wants to save his evenings for family and personal interests."],
+    ["找到适合自己的工作并不容易，所以我想先了解公司的文化和发展机会。", "It's not easy to find a job that's right for you, so I'd like to learn about the company culture and growth opportunities first."]
+  ],
+  "时间": [
+    ["你有时间的话，我们一起喝杯咖啡吧，我也正好有件事情想请教你。", "If you have time, let's have a coffee. There's also something I'd like to ask you about."],
+    ["时间过得真快，我们已经认识五年了，没想到大家现在都在不同的城市工作。", "Time flies—we've known each other for five years, and now we're all working in different cities."],
+    ["出发前请确认一下火车时间，最好再提前一点到车站，以免错过班次。", "Please double-check the train time before leaving and arrive at the station a little early to avoid missing it."]
+  ],
+  "现在": [
+    ["我现在不方便接电话，晚一点开完会以后再回你，可以吗？", "I can't take a call right now. Is it okay if I call you back after my meeting later?"],
+    ["我们现在出发，还赶得上最后一班车，所以最好别再耽误时间了。", "If we leave now, we can still catch the last bus, so we'd better not delay any longer."],
+    ["现在网上订票很方便，你只要选好日期和座位，就可以直接在线付款。", "Booking tickets online is convenient nowadays. Just choose the date and seat, and you can pay online."]
+  ],
+  "对不起": [
+    ["对不起，我把你的名字记错了，刚才才发现，所以想马上跟你道歉。", "I'm sorry I got your name wrong. I only just noticed, so I wanted to apologize straight away."],
+    ["对不起，我来晚了，让你等了这么久，下次我会提前安排好出门时间。", "Sorry I'm late and kept you waiting. Next time I'll plan my departure time earlier."],
+    ["对不起，这个位置已经有人坐了，你可以看看靠窗的那张桌子是否空着。", "Sorry, this seat is taken. You could check whether the table by the window is free."]
+  ]
+};
+
 function isWeakExample(item, pair) {
   const zh = String(pair[0] || "").trim();
   const en = String(pair[1] || "").trim();
@@ -605,11 +701,14 @@ function buildFallbackExamplePair(item, seed) {
 }
 
 function getVariedExamplePair(item, seed) {
+  const hanzi = String(item.h || "").trim();
   const pair = [String(item.xz || "").trim(), String(item.xe || "").trim()];
-  const bank = EXAMPLE_BANK[String(item.h || "").trim()];
+  const hanziCount = Array.from(pair[0]).filter(function (ch) { return /[\u3400-\u9fff]/.test(ch); }).length;
+  const longBank = LONG_EXAMPLE_OVERRIDES[hanzi];
+  const bank = longBank || EXAMPLE_BANK[hanzi];
   const weak = isWeakExample(item, pair);
-  if (Array.isArray(bank) && bank.length && (weak || state.exampleSeed > 0)) {
-    const idx = seededValue(String(item.h) + ":" + String(seed || 0), state.exampleSeed + 1) % bank.length;
+  if (Array.isArray(bank) && bank.length && (weak || hanziCount < 18 || state.exampleSeed > 0)) {
+    const idx = seededValue(hanzi + ":" + String(seed || 0), state.exampleSeed + 1) % bank.length;
     return bank[idx];
   }
   if (weak) return buildFallbackExamplePair(item, seed);
@@ -623,6 +722,84 @@ function makeSentenceCloze(sentence, target) {
   if (index < 0) return text;
   return text.slice(0, index) + "＿＿＿" + text.slice(index + word.length);
 }
+
+
+function prepareSentenceWordIndex() {
+  const index = new Map();
+  const words = new Map();
+  (state.vocab || []).forEach(function (item) {
+    const hanzi = String(item && item.h || "").trim();
+    if (!hanzi || !/[\u3400-\u9fff]/.test(hanzi) || !String(item.e || "").trim()) return;
+    if (!words.has(hanzi)) words.set(hanzi, item);
+  });
+  words.forEach(function (item, hanzi) {
+    const first = Array.from(hanzi)[0];
+    if (!index.has(first)) index.set(first, []);
+    index.get(first).push(item);
+  });
+  index.forEach(function (items) {
+    items.sort(function (a, b) {
+      return Array.from(String(b.h)).length - Array.from(String(a.h)).length ||
+        Number(a.f || 999999) - Number(b.f || 999999);
+    });
+  });
+  state.sentenceWordMap = words;
+  state.sentenceWordsByFirst = index;
+}
+
+function interactiveSentenceMarkup(sentence) {
+  const chars = Array.from(String(sentence || ""));
+  const pieces = [];
+  let i = 0;
+  while (i < chars.length) {
+    const ch = chars[i];
+    if (/[\u3400-\u9fff]/.test(ch)) {
+      const candidates = state.sentenceWordsByFirst.get(ch) || [];
+      let match = null;
+      for (const candidate of candidates) {
+        const target = Array.from(String(candidate.h));
+        if (target.length <= chars.length - i && target.every(function (letter, offset) {
+          return chars[i + offset] === letter;
+        })) {
+          match = candidate;
+          break;
+        }
+      }
+      if (match) {
+        const token = escapeHtml(match.h);
+        pieces.push('<button type="button" class="sentence-token" data-sentence-word="' + token +
+          '" title="Select to see pinyin and meaning" aria-label="Explain ' + token + '">' + token + '</button>');
+        i += Array.from(String(match.h)).length;
+      } else {
+        pieces.push('<span class="sentence-plain">' + escapeHtml(ch) + '</span>');
+        i += 1;
+      }
+    } else {
+      pieces.push('<span class="sentence-plain">' + escapeHtml(ch) + '</span>');
+      i += 1;
+    }
+  }
+  return '<div class="interactive-sentence"><div class="interactive-sentence-line">' + pieces.join("") +
+    '</div><div class="sentence-word-detail" aria-live="polite" hidden></div></div>';
+}
+
+function showSentenceWord(token) {
+  const hanzi = token && token.dataset ? token.dataset.sentenceWord : "";
+  const item = state.sentenceWordMap.get(hanzi);
+  const wrapper = token ? token.closest(".interactive-sentence") : null;
+  if (!item || !wrapper) return;
+  wrapper.querySelectorAll(".sentence-token.active").forEach(function (button) {
+    button.classList.remove("active");
+  });
+  token.classList.add("active");
+  const detail = wrapper.querySelector(".sentence-word-detail");
+  if (!detail) return;
+  detail.innerHTML = '<strong class="sentence-detail-hanzi">' + escapeHtml(item.h) + '</strong>' +
+    '<span class="sentence-detail-pinyin">' + escapeHtml(item.p || "") + '</span>' +
+    '<span class="sentence-detail-meaning">' + escapeHtml(item.e || "Meaning not available") + '</span>';
+  detail.hidden = false;
+}
+
 
 
 function initChips(containerId, values, selectedSet, renderLabel) {
@@ -721,7 +898,7 @@ function renderTable() {
         '<td>' + escapeHtml(item.c) + '</td>' +
         '<td>' + escapeHtml(item.v) + '</td>' +
         '<td>' + (item.l == null ? "N/A" : escapeHtml(item.l)) + '</td>' +
-        '<td>' + escapeHtml(examplePair[0]) + '</td>' +
+        '<td>' + interactiveSentenceMarkup(examplePair[0]) + '</td>' +
         '<td>' + escapeHtml(examplePair[1]) + '</td>' +
       '</tr>';
     })
@@ -1401,7 +1578,7 @@ function renderCueCards() {
       '<div class="cue-face-front-pinyin">' + escapeHtml(item.p || "") + '</div>' +
       '<div class="cue-prompt-hint">Try to recall the meaning before flipping.</div>';
     back = '<div class="cue-back-label">Meaning</div><div class="cue-face-front-meaning">' + escapeHtml(item.e) + '</div>' +
-      '<div class="cue-back-label cue-section-label">Example in context</div><div class="cue-back-zh">' + escapeHtml(exampleZh) + '</div>' +
+      '<div class="cue-back-label cue-section-label">Example in context</div>' + interactiveSentenceMarkup(exampleZh) +
       '<div class="cue-back-en">' + escapeHtml(exampleEn) + '</div>';
   } else if (mode === 1) {
     front = '<div class="cue-mode-label">ENGLISH → MANDARIN</div>' +
@@ -1409,7 +1586,7 @@ function renderCueCards() {
       '<div class="cue-prompt-hint">Recall the Chinese word and its pronunciation.</div>';
     back = '<div class="cue-back-label">Mandarin answer</div><div class="cue-face-front-hanzi">' + escapeHtml(item.h) + '</div>' +
       '<div class="cue-face-front-pinyin">' + escapeHtml(item.p || "") + '</div>' +
-      '<div class="cue-back-label cue-section-label">Example in context</div><div class="cue-back-zh">' + escapeHtml(exampleZh) + '</div>' +
+      '<div class="cue-back-label cue-section-label">Example in context</div>' + interactiveSentenceMarkup(exampleZh) +
       '<div class="cue-back-en">' + escapeHtml(exampleEn) + '</div>';
   } else {
     front = '<div class="cue-mode-label">FILL IN THE BLANK</div>' +
@@ -1418,7 +1595,7 @@ function renderCueCards() {
     back = '<div class="cue-back-label">Missing word</div><div class="cue-face-front-hanzi">' + escapeHtml(item.h) + '</div>' +
       '<div class="cue-face-front-pinyin">' + escapeHtml(item.p || "") + '</div>' +
       '<div class="cue-face-front-meaning">' + escapeHtml(item.e) + '</div>' +
-      '<div class="cue-back-label cue-section-label">Full sentence</div><div class="cue-back-zh">' + escapeHtml(exampleZh) + '</div>' +
+      '<div class="cue-back-label cue-section-label">Full sentence</div>' + interactiveSentenceMarkup(exampleZh) +
       '<div class="cue-back-en">' + escapeHtml(exampleEn) + '</div>';
   }
 
@@ -1439,7 +1616,7 @@ function renderCueCards() {
   '</div>';
 
   $("cue-card").addEventListener("click", function (event) {
-    if (event.target.closest(".cue-arrow")) return;
+    if (event.target.closest(".cue-arrow, .sentence-token, .sentence-word-detail")) return;
     state.cueFlipped = !state.cueFlipped;
     renderCueCards();
   });
@@ -1504,6 +1681,10 @@ function downloadCsv() {
 }
 
 function wireEvents() {
+  document.addEventListener("click", function (event) {
+    const token = event.target.closest(".sentence-token");
+    if (token) showSentenceWord(token);
+  });
   initChips("filter-proficiency", Array.from({ length: 10 }, (_, i) => i + 1), state.selectedLevels, (v) => `L${v}`);
   initChips("filter-hsk", ["1", "2", "3", "4", "5", "6", "7", "na"], state.selectedHsk, (v) => (v === "na" ? "N/A" : `HSK ${v}`));
   initChips("filter-length", ["1", "2", "3", "4+"], state.selectedLengths, (v) => (v === "4+" ? "4+ chars" : `${v} char${v === "1" ? "" : "s"}`));
@@ -1567,6 +1748,7 @@ async function init() {
     const response = await fetch(DATA_URL);
     if (!response.ok) throw new Error(`Could not load ${DATA_URL}`);
     state.vocab = await response.json();
+    prepareSentenceWordIndex();
     state.filtered = state.vocab;
     applyFilters();
     renderPracticeStats();
