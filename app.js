@@ -779,25 +779,106 @@ function interactiveSentenceMarkup(sentence) {
       i += 1;
     }
   }
-  return '<div class="interactive-sentence"><div class="interactive-sentence-line">' + pieces.join("") +
-    '</div><div class="sentence-word-detail" aria-live="polite" hidden></div></div>';
+  return '<div class="interactive-sentence"><div class="interactive-sentence-line">' + pieces.join("") + '</div></div>';
 }
 
-function showSentenceWord(token) {
+let sentencePopoverAnchor = null;
+let sentencePopoverPinned = false;
+let sentencePopoverHideTimer = null;
+
+function ensureSentenceWordPopover() {
+  let popover = document.getElementById("sentence-word-popover");
+  if (popover) return popover;
+  popover = document.createElement("div");
+  popover.id = "sentence-word-popover";
+  popover.className = "sentence-word-popover";
+  popover.setAttribute("role", "dialog");
+  popover.setAttribute("aria-label", "Chinese word meaning");
+  popover.setAttribute("aria-live", "polite");
+  popover.hidden = true;
+  popover.addEventListener("pointerenter", cancelSentenceWordPopoverHide);
+  popover.addEventListener("pointerleave", scheduleSentenceWordPopoverHide);
+  document.body.appendChild(popover);
+  return popover;
+}
+
+function cancelSentenceWordPopoverHide() {
+  if (sentencePopoverHideTimer) {
+    clearTimeout(sentencePopoverHideTimer);
+    sentencePopoverHideTimer = null;
+  }
+}
+
+function scheduleSentenceWordPopoverHide() {
+  cancelSentenceWordPopoverHide();
+  if (sentencePopoverPinned) return;
+  sentencePopoverHideTimer = setTimeout(function () {
+    hideSentenceWordPopover();
+  }, 180);
+}
+
+function positionSentenceWordPopover() {
+  const popover = document.getElementById("sentence-word-popover");
+  const anchor = sentencePopoverAnchor;
+  if (!popover || popover.hidden || !anchor || !anchor.isConnected) return;
+  const rect = anchor.getBoundingClientRect();
+  const margin = 12;
+  const width = popover.offsetWidth || 300;
+  const height = popover.offsetHeight || 130;
+  let left = rect.left + rect.width / 2 - width / 2;
+  left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+  const canFitAbove = rect.top - height - 13 >= margin;
+  let top = canFitAbove ? rect.top - height - 13 : rect.bottom + 13;
+  let below = !canFitAbove;
+  if (top + height > window.innerHeight - margin) {
+    top = Math.max(margin, window.innerHeight - height - margin);
+  }
+  popover.classList.toggle("is-below", below);
+  const arrowLeft = Math.max(18, Math.min(rect.left + rect.width / 2 - left, width - 18));
+  popover.style.setProperty("--popover-arrow-left", arrowLeft + "px");
+  popover.style.left = Math.round(left) + "px";
+  popover.style.top = Math.round(top) + "px";
+}
+
+function hideSentenceWordPopover() {
+  cancelSentenceWordPopoverHide();
+  const popover = document.getElementById("sentence-word-popover");
+  if (popover) popover.hidden = true;
+  if (sentencePopoverAnchor) sentencePopoverAnchor.classList.remove("active");
+  sentencePopoverAnchor = null;
+  sentencePopoverPinned = false;
+}
+
+function showSentenceWord(token, pin) {
   const hanzi = token && token.dataset ? token.dataset.sentenceWord : "";
   const item = state.sentenceWordMap.get(hanzi);
-  const wrapper = token ? token.closest(".interactive-sentence") : null;
-  if (!item || !wrapper) return;
-  wrapper.querySelectorAll(".sentence-token.active").forEach(function (button) {
-    button.classList.remove("active");
-  });
+  if (!item || !token) return;
+  if (!pin && sentencePopoverPinned) return;
+  cancelSentenceWordPopoverHide();
+
+  if (pin && sentencePopoverPinned && sentencePopoverAnchor === token) {
+    hideSentenceWordPopover();
+    return;
+  }
+  if (sentencePopoverAnchor) sentencePopoverAnchor.classList.remove("active");
+  sentencePopoverAnchor = token;
+  sentencePopoverPinned = Boolean(pin);
   token.classList.add("active");
-  const detail = wrapper.querySelector(".sentence-word-detail");
-  if (!detail) return;
-  detail.innerHTML = '<strong class="sentence-detail-hanzi">' + escapeHtml(item.h) + '</strong>' +
-    '<span class="sentence-detail-pinyin">' + escapeHtml(item.p || "") + '</span>' +
-    '<span class="sentence-detail-meaning">' + escapeHtml(item.e || "Meaning not available") + '</span>';
-  detail.hidden = false;
+
+  const popover = ensureSentenceWordPopover();
+  popover.innerHTML =
+    '<div class="sentence-popover-header"><span class="sentence-popover-avatar" aria-hidden="true">汉</span>' +
+      '<span class="sentence-popover-heading"><strong>Word helper</strong><small>Hanzi · Pinyin · Meaning</small></span>' +
+      '<button type="button" class="sentence-popover-close" aria-label="Close word popup">×</button>' +
+    '</div>' +
+    '<div class="sentence-popover-main"><span class="sentence-popover-hanzi">' + escapeHtml(item.h) + '</span>' +
+      '<span class="sentence-popover-pinyin">' + escapeHtml(item.p || "Pinyin unavailable") + '</span>' +
+    '</div>' +
+    '<div class="sentence-popover-meaning">' + escapeHtml(item.e || "Meaning not available") + '</div>' +
+    '<div class="sentence-popover-footer"><span>' + (sentencePopoverPinned ? "Click the word again or × to close" : "Move away to dismiss · Click to keep open") + '</span>' +
+      '<button type="button" class="sentence-popover-listen" aria-label="Listen to pronunciation">🔊 Listen</button></div>';
+  popover.hidden = false;
+  positionSentenceWordPopover();
 }
 
 
@@ -1616,7 +1697,7 @@ function renderCueCards() {
   '</div>';
 
   $("cue-card").addEventListener("click", function (event) {
-    if (event.target.closest(".cue-arrow, .sentence-token, .sentence-word-detail")) return;
+    if (event.target.closest(".cue-arrow, .sentence-token, .sentence-word-detail, .sentence-word-popover")) return;
     state.cueFlipped = !state.cueFlipped;
     renderCueCards();
   });
@@ -1681,10 +1762,43 @@ function downloadCsv() {
 }
 
 function wireEvents() {
-  document.addEventListener("click", function (event) {
-    const token = event.target.closest(".sentence-token");
-    if (token) showSentenceWord(token);
+  document.addEventListener("pointerover", function (event) {
+    const token = event.target.closest && event.target.closest(".sentence-token");
+    if (token && !token.contains(event.relatedTarget)) showSentenceWord(token, false);
   });
+  document.addEventListener("pointerout", function (event) {
+    const token = event.target.closest && event.target.closest(".sentence-token");
+    if (!token || token.contains(event.relatedTarget)) return;
+    if (event.relatedTarget && event.relatedTarget.closest && event.relatedTarget.closest("#sentence-word-popover")) return;
+    scheduleSentenceWordPopoverHide();
+  });
+  document.addEventListener("focusin", function (event) {
+    const token = event.target.closest && event.target.closest(".sentence-token");
+    if (token) showSentenceWord(token, false);
+  });
+  document.addEventListener("focusout", function (event) {
+    if (event.target.closest && event.target.closest(".sentence-token")) scheduleSentenceWordPopoverHide();
+  });
+  document.addEventListener("click", function (event) {
+    const token = event.target.closest && event.target.closest(".sentence-token");
+    const popover = event.target.closest && event.target.closest("#sentence-word-popover");
+    if (token) {
+      showSentenceWord(token, true);
+      return;
+    }
+    if (popover) {
+      if (event.target.closest(".sentence-popover-close")) hideSentenceWordPopover();
+      else if (event.target.closest(".sentence-popover-listen") && sentencePopoverAnchor) {
+        const selected = state.sentenceWordMap.get(sentencePopoverAnchor.dataset.sentenceWord);
+        if (selected) speakMandarinText(selected.h, 0.78, "zh-CN");
+      }
+      return;
+    }
+    if (sentencePopoverPinned) hideSentenceWordPopover();
+    else scheduleSentenceWordPopoverHide();
+  });
+  window.addEventListener("resize", positionSentenceWordPopover);
+  window.addEventListener("scroll", positionSentenceWordPopover, true);
   initChips("filter-proficiency", Array.from({ length: 10 }, (_, i) => i + 1), state.selectedLevels, (v) => `L${v}`);
   initChips("filter-hsk", ["1", "2", "3", "4", "5", "6", "7", "na"], state.selectedHsk, (v) => (v === "na" ? "N/A" : `HSK ${v}`));
   initChips("filter-length", ["1", "2", "3", "4+"], state.selectedLengths, (v) => (v === "4+" ? "4+ chars" : `${v} char${v === "1" ? "" : "s"}`));
