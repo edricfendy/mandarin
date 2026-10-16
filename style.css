@@ -235,6 +235,16 @@ body {
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
+.data-table th .table-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.35;
+  text-transform: none;
+}
 .data-table tr:hover td { background: var(--bg-card-hover); }
 .data-table .col-hanzi { font-size: 20px; font-weight: 700; white-space: nowrap; }
 .data-table .col-pinyin { color: var(--accent-light); white-space: nowrap; }
