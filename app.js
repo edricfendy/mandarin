@@ -1387,42 +1387,96 @@ function renderCueCards() {
   if (!deck.length) return;
   state.cueIndex = Math.max(0, Math.min(state.cueIndex, deck.length - 1));
   const item = deck[state.cueIndex];
-  const front = `<div class="cue-face-front-hanzi">${escapeHtml(item.h)}</div>
-    <div class="cue-face-front-pinyin">${escapeHtml(item.p)}</div>
-    <div class="cue-face-front-meaning">${escapeHtml(item.e)}</div>`;
-  const back = `<div class="cue-back-label">Usage</div>
-    <div class="cue-back-zh">${escapeHtml(item.xz || item.h)}</div>
-    <div class="cue-back-pinyin">${escapeHtml(item.p)}</div>
-    <div class="cue-back-en">${escapeHtml(item.xe || item.e)}</div>`;
+  const pair = getVariedExamplePair(item, state.cueIndex + state.exampleSeed * 17);
+  const modeNames = ["Meaning recall", "English → Chinese", "Sentence cloze"];
+  const mode = (state.cueIndex + state.cueStyleOffset) % 3;
+  const exampleZh = pair[0] || item.h;
+  const exampleEn = pair[1] || item.e;
+  let front = "";
+  let back = "";
 
-  $("cue-widget").innerHTML = `<div class="cue-wrap">
-    <div class="cue-help">Click the card to flip.</div>
-    <div class="cue-index">${state.cueIndex + 1} / ${deck.length}</div>
-    <div class="cue-card" id="cue-card">
-      <button class="cue-arrow cue-arrow-left" id="cue-prev" aria-label="Previous">‹</button>
-      <div>${state.cueFlipped ? back : front}</div>
-      <button class="cue-arrow cue-arrow-right" id="cue-next" aria-label="Next">›</button>
-    </div>
-  </div>`;
+  if (mode === 0) {
+    front = '<div class="cue-mode-label">MEANING RECALL</div>' +
+      '<div class="cue-face-front-hanzi">' + escapeHtml(item.h) + '</div>' +
+      '<div class="cue-face-front-pinyin">' + escapeHtml(item.p || "") + '</div>' +
+      '<div class="cue-prompt-hint">Try to recall the meaning before flipping.</div>';
+    back = '<div class="cue-back-label">Meaning</div><div class="cue-face-front-meaning">' + escapeHtml(item.e) + '</div>' +
+      '<div class="cue-back-label cue-section-label">Example in context</div><div class="cue-back-zh">' + escapeHtml(exampleZh) + '</div>' +
+      '<div class="cue-back-en">' + escapeHtml(exampleEn) + '</div>';
+  } else if (mode === 1) {
+    front = '<div class="cue-mode-label">ENGLISH → MANDARIN</div>' +
+      '<div class="cue-front-english">' + escapeHtml(item.e) + '</div>' +
+      '<div class="cue-prompt-hint">Recall the Chinese word and its pronunciation.</div>';
+    back = '<div class="cue-back-label">Mandarin answer</div><div class="cue-face-front-hanzi">' + escapeHtml(item.h) + '</div>' +
+      '<div class="cue-face-front-pinyin">' + escapeHtml(item.p || "") + '</div>' +
+      '<div class="cue-back-label cue-section-label">Example in context</div><div class="cue-back-zh">' + escapeHtml(exampleZh) + '</div>' +
+      '<div class="cue-back-en">' + escapeHtml(exampleEn) + '</div>';
+  } else {
+    front = '<div class="cue-mode-label">FILL IN THE BLANK</div>' +
+      '<div class="cue-back-zh cue-cloze-sentence">' + escapeHtml(makeSentenceCloze(exampleZh, item.h)) + '</div>' +
+      '<div class="cue-prompt-hint">Which word completes this sentence?</div>';
+    back = '<div class="cue-back-label">Missing word</div><div class="cue-face-front-hanzi">' + escapeHtml(item.h) + '</div>' +
+      '<div class="cue-face-front-pinyin">' + escapeHtml(item.p || "") + '</div>' +
+      '<div class="cue-face-front-meaning">' + escapeHtml(item.e) + '</div>' +
+      '<div class="cue-back-label cue-section-label">Full sentence</div><div class="cue-back-zh">' + escapeHtml(exampleZh) + '</div>' +
+      '<div class="cue-back-en">' + escapeHtml(exampleEn) + '</div>';
+  }
 
-  $("cue-card").addEventListener("click", () => {
+  $("cue-widget").innerHTML = '<div class="cue-wrap">' +
+    '<div class="cue-toolbar">' +
+      '<button type="button" class="btn btn-secondary" id="cue-style">Change challenge</button>' +
+      '<button type="button" class="btn btn-secondary" id="cue-random">Random card</button>' +
+      '<button type="button" class="btn btn-secondary" id="cue-speak">🔊 Listen</button>' +
+    '</div>' +
+    '<div class="cue-help">Card styles rotate automatically. Try answering before you flip the card.</div>' +
+    '<div class="cue-index">Card ' + (state.cueIndex + 1) + ' / ' + deck.length + ' · ' + modeNames[mode] + '</div>' +
+    '<div class="cue-card" id="cue-card" role="button" tabindex="0" aria-label="Flip cue card">' +
+      '<button class="cue-arrow cue-arrow-left" id="cue-prev" aria-label="Previous card">‹</button>' +
+      '<div class="cue-card-content">' + (state.cueFlipped ? back : front) + '</div>' +
+      '<button class="cue-arrow cue-arrow-right" id="cue-next" aria-label="Next card">›</button>' +
+    '</div>' +
+    '<div class="cue-card-tip">Tip: say your answer aloud, then flip to check.</div>' +
+  '</div>';
+
+  $("cue-card").addEventListener("click", function (event) {
+    if (event.target.closest(".cue-arrow")) return;
     state.cueFlipped = !state.cueFlipped;
     renderCueCards();
   });
-  $("cue-prev").addEventListener("click", (event) => {
+  $("cue-card").addEventListener("keydown", function (event) {
+    if (event.key === "Enter" || event.key === " ") {
+      if (event.target.closest(".cue-arrow")) return;
+      event.preventDefault();
+      state.cueFlipped = !state.cueFlipped;
+      renderCueCards();
+    }
+  });
+  $("cue-prev").addEventListener("click", function (event) {
     event.stopPropagation();
     state.cueIndex = (state.cueIndex - 1 + deck.length) % deck.length;
     state.cueFlipped = false;
     renderCueCards();
   });
-  $("cue-next").addEventListener("click", (event) => {
+  $("cue-next").addEventListener("click", function (event) {
     event.stopPropagation();
     state.cueIndex = (state.cueIndex + 1) % deck.length;
     state.cueFlipped = false;
     renderCueCards();
   });
+  $("cue-style").addEventListener("click", function () {
+    state.cueStyleOffset = (state.cueStyleOffset + 1) % 3;
+    state.cueFlipped = false;
+    renderCueCards();
+  });
+  $("cue-random").addEventListener("click", function () {
+    state.cueIndex = Math.floor(Math.random() * deck.length);
+    state.cueFlipped = false;
+    renderCueCards();
+  });
+  $("cue-speak").addEventListener("click", function () {
+    speakMandarinText(state.cueFlipped ? exampleZh : item.h, 0.78, "zh-CN");
+  });
 }
-
 function renderAll() {
   renderMetrics();
   renderTable();
